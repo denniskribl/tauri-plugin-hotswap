@@ -1,0 +1,9 @@
+{
+  "identifier": "default",
+  "description": "Default capabilities for the example app",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "hotswap:default"
+  ]
+}

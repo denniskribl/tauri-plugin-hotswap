@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hotswap Example</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      max-width: 600px;
+      margin: 40px auto;
+      padding: 0 20px;
+      background: #1a1a2e;
+      color: #eee;
+    }
+    h1 { color: #e94560; }
+    button {
+      background: #e94560;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      margin: 4px;
+    }
+    button:hover { background: #c73652; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    pre {
+      background: #16213e;
+      padding: 12px;
+      border-radius: 6px;
+      overflow-x: auto;
+      font-size: 13px;
+    }
+    #status { margin: 16px 0; }
+    #progress { display: none; margin: 8px 0; }
+    #progress-bar {
+      width: 100%;
+      height: 8px;
+      background: #16213e;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    #progress-fill {
+      height: 100%;
+      background: #e94560;
+      width: 0%;
+      transition: width 0.2s;
+    }
+  </style>
+</head>
+<body>
+  <h1>Hotswap Example</h1>
+
+  <div id="status">Loading version info...</div>
+
+  <div>
+    <button id="btn-check">Check for Update</button>
+    <button id="btn-apply" disabled>Apply Update</button>
+    <button id="btn-rollback">Rollback</button>
+  </div>
+
+  <div id="progress">
+    <div id="progress-bar"><div id="progress-fill"></div></div>
+    <small id="progress-text"></small>
+  </div>
+
+  <pre id="log"></pre>
+
+  <script type="module">
+    // NOTE: In a real app you'd import from the npm package:
+    //   import { ... } from 'tauri-plugin-hotswap-api';
+    // For this example we use invoke directly.
+    const { invoke } = window.__TAURI__.core;
+    const { listen } = window.__TAURI__.event;
+
+    const log = (msg) => {
+      const el = document.getElementById('log');
+      el.textContent += `${new Date().toLocaleTimeString()} ${msg}\n`;
+      el.scrollTop = el.scrollHeight;
+    };
+
+    const updateStatus = async () => {
+      try {
+        const info = await invoke('plugin:hotswap|hotswap_current_version');
+        document.getElementById('status').innerHTML = info.active
+          ? `Hotswap v${info.version} (seq ${info.sequence}) — binary v${info.binary_version}`
+          : `Using embedded assets — binary v${info.binary_version}`;
+      } catch (e) {
+        log(`Error getting version: ${e}`);
+      }
+    };
+
+    // Notify ready on startup
+    try {
+      await invoke('plugin:hotswap|hotswap_notify_ready');
+      log('notifyReady() called');
+    } catch (e) {
+      log(`notifyReady error: ${e}`);
+    }
+
+    await updateStatus();
+
+    // Check for update
+    document.getElementById('btn-check').addEventListener('click', async () => {
+      log('Checking for update...');
+      try {
+        const result = await invoke('plugin:hotswap|hotswap_check');
+        if (result.available) {
+          log(`Update available: v${result.version} (seq ${result.sequence})`);
+          if (result.notes) log(`Notes: ${result.notes}`);
+          document.getElementById('btn-apply').disabled = false;
+        } else {
+          log('No update available');
+        }
+      } catch (e) {
+        log(`Check error: ${e}`);
+      }
+    });
+
+    // Apply update with progress
+    document.getElementById('btn-apply').addEventListener('click', async () => {
+      const progressEl = document.getElementById('progress');
+      const fillEl = document.getElementById('progress-fill');
+      const textEl = document.getElementById('progress-text');
+      progressEl.style.display = 'block';
+
+      const unlisten = await listen('hotswap://download-progress', (event) => {
+        const { downloaded, total } = event.payload;
+        if (total) {
+          const pct = Math.round((downloaded / total) * 100);
+          fillEl.style.width = `${pct}%`;
+          textEl.textContent = `${(downloaded / 1024).toFixed(0)} / ${(total / 1024).toFixed(0)} KB`;
+        } else {
+          textEl.textContent = `${(downloaded / 1024).toFixed(0)} KB downloaded`;
+        }
+      });
+
+      try {
+        log('Applying update...');
+        const version = await invoke('plugin:hotswap|hotswap_apply');
+        log(`Applied v${version}. Reload to use new assets.`);
+        document.getElementById('btn-apply').disabled = true;
+      } catch (e) {
+        log(`Apply error: ${e}`);
+      } finally {
+        unlisten();
+        progressEl.style.display = 'none';
+      }
+
+      await updateStatus();
+    });
+
+    // Rollback
+    document.getElementById('btn-rollback').addEventListener('click', async () => {
+      log('Rolling back...');
+      try {
+        const info = await invoke('plugin:hotswap|hotswap_rollback');
+        log(info.active
+          ? `Rolled back to v${info.version}`
+          : 'Rolled back to embedded assets');
+      } catch (e) {
+        log(`Rollback error: ${e}`);
+      }
+      await updateStatus();
+    });
+  </script>
+</body>
+</html>

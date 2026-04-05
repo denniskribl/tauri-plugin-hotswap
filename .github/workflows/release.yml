@@ -1,0 +1,204 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-features -- -D warnings
+
+      - name: Test
+        run: cargo test
+
+      - name: Test (zip feature)
+        run: cargo test --features zip
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Guest JS — install
+        working-directory: guest-js
+        run: pnpm install --frozen-lockfile
+
+      - name: Guest JS — build
+        working-directory: guest-js
+        run: pnpm build
+
+      - name: Install mdBook
+        run: |
+          curl -sSL https://github.com/rust-lang/mdBook/releases/download/v0.5.2/mdbook-v0.5.2-x86_64-unknown-linux-gnu.tar.gz | tar -xz
+          chmod +x mdbook
+          mv mdbook /usr/local/bin/
+
+      - name: Build docs
+        run: mdbook build
+
+  validate-version:
+    name: Validate version
+    runs-on: ubuntu-latest
+    needs: verify
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract tag version
+        id: tag
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Check Cargo.toml version
+        run: |
+          CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          if [ "$CARGO_VERSION" != "${{ steps.tag.outputs.version }}" ]; then
+            echo "ERROR: Cargo.toml version '${CARGO_VERSION}' does not match tag version '${{ steps.tag.outputs.version }}'"
+            exit 1
+          fi
+          echo "Cargo.toml version OK: ${CARGO_VERSION}"
+
+      - name: Check guest-js package.json version
+        run: |
+          PKG_VERSION=$(node -p "require('./guest-js/package.json').version")
+          if [ "$PKG_VERSION" != "${{ steps.tag.outputs.version }}" ]; then
+            echo "ERROR: guest-js/package.json version '${PKG_VERSION}' does not match tag version '${{ steps.tag.outputs.version }}'"
+            exit 1
+          fi
+          echo "guest-js/package.json version OK: ${PKG_VERSION}"
+
+      - name: Check CHANGELOG.md contains version heading
+        run: |
+          VERSION="${{ steps.tag.outputs.version }}"
+          if ! grep -qE "^##[[:space:]].*${VERSION}" CHANGELOG.md; then
+            echo "ERROR: CHANGELOG.md does not contain a heading for version '${VERSION}'"
+            exit 1
+          fi
+          echo "CHANGELOG.md heading OK for version: ${VERSION}"
+
+  publish-rust:
+    name: Publish (crates.io)
+    runs-on: ubuntu-latest
+    needs: validate-version
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: cargo publish
+
+  publish-npm:
+    name: Publish (npm)
+    runs-on: ubuntu-latest
+    needs: validate-version
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install
+        working-directory: guest-js
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        working-directory: guest-js
+        run: pnpm build
+
+      - name: Publish to npm
+        working-directory: guest-js
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: pnpm publish --no-git-checks --access public
+
+  github-release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: [publish-rust, publish-npm]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract tag version
+        id: tag
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        run: |
+          VERSION="${{ steps.tag.outputs.version }}"
+          # Extract everything between the heading for this version and the next heading
+          NOTES=$(awk "/^##[[:space:]].*${VERSION}/{found=1; next} found && /^##[[:space:]]/{exit} found{print}" CHANGELOG.md)
+          if [ -z "$NOTES" ]; then
+            echo "WARNING: No release notes found for version ${VERSION} in CHANGELOG.md"
+            NOTES="See CHANGELOG.md for details."
+          fi
+          # Write to a temp file to safely pass multiline content
+          printf '%s' "$NOTES" > /tmp/release-notes.md
+          echo "notes_file=/tmp/release-notes.md" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "${{ github.ref_name }}" \
+            --notes-file "${{ steps.notes.outputs.notes_file }}"
