@@ -1,3 +1,7 @@
+---
+title: tauri-plugin-hotswap
+---
+
 # 🔥🔄 tauri-plugin-hotswap
 
 ✨ Ship frontend fixes in minutes

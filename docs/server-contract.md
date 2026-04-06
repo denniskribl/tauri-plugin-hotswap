@@ -1,3 +1,7 @@
+---
+title: Server Endpoint Contract
+---
+
 # 🌐 Server Endpoint Contract
 
 This document describes what your update server needs to implement. The default `HttpResolver` makes requests following this contract.

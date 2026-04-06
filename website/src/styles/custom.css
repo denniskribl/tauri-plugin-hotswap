@@ -1,0 +1,43 @@
+/* Fire / hot accent */
+:root {
+  --sl-color-accent-low: #451a03;
+  --sl-color-accent: #ef4444;
+  --sl-color-accent-high: #fca5a5;
+}
+
+:root[data-theme='light'] {
+  --sl-color-accent-low: #fee2e2;
+  --sl-color-accent: #dc2626;
+  --sl-color-accent-high: #7f1d1d;
+}
+
+/* Hero spacing */
+.hero {
+  padding-block: 4rem 2rem;
+  padding-inline: 2rem;
+}
+
+/* Primary CTA button */
+a.sl-flex:where(.primary) {
+  background: linear-gradient(135deg, #ef4444 0%, #f97316 100%);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.5rem;
+  font-weight: 500;
+  padding: 0.65rem 1.5rem;
+  color: #fff !important;
+  transition: opacity 0.15s ease;
+}
+
+a.sl-flex:where(.primary):hover {
+  opacity: 0.85;
+}
+
+/* Card grid breathing room */
+.sl-card-grid {
+  padding-inline: 1rem;
+}
+
+/* Content area padding */
+.sl-container {
+  padding-inline: 2rem;
+}

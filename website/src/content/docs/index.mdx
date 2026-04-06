@@ -1,0 +1,43 @@
+---
+title: tauri-plugin-hotswap
+template: splash
+hero:
+  tagline: Open-source OTA updates for Tauri v2. Push frontend fixes to your users in minutes — no app store, no rebuild.
+  actions:
+    - text: Get Started
+      link: /tauri-plugin-hotswap/readme/
+      icon: right-arrow
+      variant: primary
+    - text: GitHub
+      link: https://github.com/denniskribl/tauri-plugin-hotswap
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, Steps } from '@astrojs/starlight/components';
+
+<CardGrid>
+  <Card title="Signed bundles" icon="approve-check-circle">
+    Every update is verified with minisign before extraction. No unsigned code ever reaches your users.
+  </Card>
+  <Card title="Auto-rollback" icon="warning">
+    If an update isn't confirmed healthy, the next launch automatically reverts to the last known-good version.
+  </Card>
+  <Card title="Self-hosted" icon="puzzle">
+    Bring your own CDN, S3, or any HTTPS endpoint. No vendor lock-in, no third-party dependencies.
+  </Card>
+  <Card title="Zero downtime" icon="rocket">
+    Download in the background, activate when ready. Split download and apply for seamless UX.
+  </Card>
+</CardGrid>
+
+---
+
+## Quick start
+
+<Steps>
+1. **Configure** the plugin in your Tauri app → [Configuration](/tauri-plugin-hotswap/configuration/)
+2. **Set up** your update endpoint → [Server Contract](/tauri-plugin-hotswap/server-contract/)
+3. **Build & sign** your first bundle → [Creating Bundles](/tauri-plugin-hotswap/creating-bundles/)
+4. **Wire** the frontend API → [API Reference](/tauri-plugin-hotswap/api-reference/)
+</Steps>

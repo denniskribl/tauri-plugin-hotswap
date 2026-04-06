@@ -1,3 +1,7 @@
+---
+title: Creating OTA Bundles
+---
+
 # 📦 Creating OTA Bundles
 
 This guide walks through building, signing, and publishing frontend bundles for hotswap delivery.

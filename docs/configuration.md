@@ -1,3 +1,7 @@
+---
+title: Configuration
+---
+
 # ⚙️ Configuration
 
 There are three ways to configure the plugin, from simplest to most flexible.

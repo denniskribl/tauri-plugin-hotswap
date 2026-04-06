@@ -1,0 +1,25 @@
+{
+  "name": "tauri-plugin-hotswap-docs",
+  "private": true,
+  "packageManager": "pnpm@10.32.1",
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.34.0",
+    "@pasqal-io/starlight-client-mermaid": "^0.1.0",
+    "astro": "^5.0.0",
+    "mermaid": "^11.14.0",
+    "sharp": "^0.33.0",
+    "starlight-ion-theme": "^2.4.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "sharp"
+    ]
+  }
+}

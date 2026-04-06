@@ -1,3 +1,7 @@
+---
+title: Design Philosophy
+---
+
 # 🧭 Design Philosophy
 
 **Opinionated defaults. Extensible when you need it.**

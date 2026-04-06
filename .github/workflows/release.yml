@@ -56,14 +56,9 @@ jobs:
         working-directory: guest-js
         run: pnpm build
 
-      - name: Install mdBook
-        run: |
-          curl -sSL https://github.com/rust-lang/mdBook/releases/download/v0.5.2/mdbook-v0.5.2-x86_64-unknown-linux-gnu.tar.gz | tar -xz
-          chmod +x mdbook
-          mv mdbook /usr/local/bin/
-
       - name: Build docs
-        run: mdbook build
+        working-directory: website
+        run: pnpm install --frozen-lockfile && pnpm build
 
   validate-version:
     name: Validate version

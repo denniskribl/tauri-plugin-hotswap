@@ -2,8 +2,11 @@ target/
 node_modules/
 dist/
 guest-js/dist/
+website/dist/
+website/.astro/
 **/gen/schemas/
 book/
 *.swp
 *.swo
 .DS_Store
+.claude/

@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">🔥 tauri-plugin-hotswap</h1>
+  <h1 align="center">🔥🔁 tauri-plugin-hotswap</h1>
   <p align="center">
     Open-source OTA frontend updates for Tauri v2 — no binary rebuild, no app store review, no cloud service required.
   </p>
@@ -39,22 +39,16 @@ It works by swapping Tauri's embedded asset provider at startup. The WebView kee
 
 ### How it works
 
-```
-   Your CDN / S3 / any HTTPS host
-   ┌─────────────────────────────┐
-   │  manifest.json              │
-   │  signed frontend.tar.gz    │
-   └────────────┬────────────────┘
-                │
-         download + verify signature
-                │
-   ┌────────────▼────────────────┐
-   │  Tauri App                  │
-   │                             │
-   │  HotswapAssets::get(key)    │
-   │    1. filesystem (cached)   │
-   │    2. embedded (fallback)   │
-   └─────────────────────────────┘
+```mermaid
+flowchart TD
+    A["Your CDN / S3 / any HTTPS host
+    manifest.json
+    signed frontend.tar.gz"] -- "download + verify signature" --> B
+    B["Tauri App
+
+    HotswapAssets::get(key)
+    1. filesystem (cached)
+    2. embedded (fallback)"]
 ```
 
 ---
