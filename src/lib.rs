@@ -53,6 +53,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use assets::{AssetDirHandle, EmptyAssets};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tauri::{
     plugin::{Builder, TauriPlugin},
     Manager, Runtime,
@@ -68,6 +69,13 @@ pub use policy::{
 };
 pub use resolver::{CheckContext, HotswapResolver, HttpResolver, StaticFileResolver};
 pub use updater::{DownloadProgress, LifecycleEvent};
+
+/// Plugin instance type returned by initialization helpers.
+///
+/// The plugin builder intentionally uses `serde_json::Value` for the plugin
+/// API config type so Tauri accepts `plugins.hotswap` as `null`, `{}`, or a
+/// full config object across all initialization paths.
+pub type HotswapPlugin<R> = TauriPlugin<R, Value>;
 
 /// Configuration that can be specified in `tauri.conf.json` under
 /// `plugins.hotswap`, or passed programmatically.
@@ -86,7 +94,7 @@ pub use updater::{DownloadProgress, LifecycleEvent};
 ///   }
 /// }
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HotswapConfig {
     /// The update check endpoint URL.
     /// Use `{{current_sequence}}` as a placeholder.
@@ -226,7 +234,7 @@ impl fmt::Debug for HotswapState {
 /// URL violates `require_https`.
 pub fn init<R: Runtime>(
     context: tauri::Context<R>,
-) -> Result<(TauriPlugin<R, HotswapConfig>, tauri::Context<R>), Error> {
+) -> Result<(HotswapPlugin<R>, tauri::Context<R>), Error> {
     let config: HotswapConfig = context
         .config()
         .plugins
@@ -256,7 +264,7 @@ pub fn init<R: Runtime>(
 pub fn init_with_config<R: Runtime>(
     context: tauri::Context<R>,
     config: HotswapConfig,
-) -> Result<(TauriPlugin<R, HotswapConfig>, tauri::Context<R>), Error> {
+) -> Result<(HotswapPlugin<R>, tauri::Context<R>), Error> {
     let endpoint = config
         .endpoint
         .clone()
@@ -397,7 +405,7 @@ impl HotswapBuilder {
     pub fn build<R: Runtime>(
         self,
         context: tauri::Context<R>,
-    ) -> Result<(TauriPlugin<R, HotswapConfig>, tauri::Context<R>), Error> {
+    ) -> Result<(HotswapPlugin<R>, tauri::Context<R>), Error> {
         let resolver = self
             .resolver
             .ok_or_else(|| Error::Config("a resolver must be set via .resolver()".into()))?;
@@ -440,7 +448,7 @@ fn build_plugin<R: Runtime>(
     resolver: Box<dyn HotswapResolver>,
     config: HotswapConfig,
     override_policies: Option<ResolvedPolicies>,
-) -> Result<(TauriPlugin<R, HotswapConfig>, tauri::Context<R>), Error> {
+) -> Result<(HotswapPlugin<R>, tauri::Context<R>), Error> {
     let binary_version = context.config().version.clone().unwrap_or_default();
     let app_id = context.config().identifier.clone();
     let base_dir = resolve_base_dir(&app_id);
@@ -509,7 +517,7 @@ fn build_plugin<R: Runtime>(
     let current_version_clone = current_version.clone();
     let http_client = reqwest::Client::new();
 
-    let plugin = Builder::<R, HotswapConfig>::new("hotswap")
+    let plugin = Builder::<R, Value>::new("hotswap")
         .invoke_handler(tauri::generate_handler![
             commands::hotswap_check,
             commands::hotswap_apply,
@@ -559,5 +567,77 @@ fn resolve_base_dir(app_id: &str) -> PathBuf {
         PathBuf::from("/data/data")
             .join(app_id)
             .join("files/hotswap")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: `HotswapConfig` must deserialize from a full JSON object.
+    /// This is the Option A path (config in tauri.conf.json).
+    #[test]
+    fn config_deserializes_from_json_object() {
+        let json = serde_json::json!({
+            "endpoint": "https://example.com/ota/{{current_sequence}}",
+            "pubkey": "RWtest",
+            "channel": "beta",
+            "binary_cache_policy": "keep_compatible",
+            "confirmation_policy": "single_launch",
+            "rollback_policy": "latest_confirmed",
+            "max_retained_versions": 3
+        });
+        let config: HotswapConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(config.pubkey, "RWtest");
+        assert_eq!(
+            config.binary_cache_policy,
+            Some(BinaryCachePolicyKind::KeepCompatible)
+        );
+        assert_eq!(config.max_retained_versions, Some(3));
+    }
+
+    /// Regression: `serde_json::Value` (the plugin builder config type)
+    /// must deserialize from `null`. This is the Option B/C path when
+    /// `plugins.hotswap` is absent from tauri.conf.json.
+    #[test]
+    fn value_deserializes_from_null() {
+        let result: serde_json::Value = serde_json::from_str("null").unwrap();
+        assert!(result.is_null());
+    }
+
+    /// Regression: `serde_json::Value` must deserialize from a JSON object.
+    /// This is the Option A path on mobile where Tauri re-deserializes
+    /// `plugins.hotswap` during `Builder::run()`.
+    #[test]
+    fn value_deserializes_from_object() {
+        let json = r#"{"endpoint":"https://example.com","pubkey":"RWtest"}"#;
+        let result: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert!(result.is_object());
+    }
+
+    /// Regression: `HotswapConfig` with only required fields.
+    #[test]
+    fn config_minimal() {
+        let json = serde_json::json!({"pubkey": "RWtest"});
+        let config: HotswapConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(config.pubkey, "RWtest");
+        assert!(config.endpoint.is_none());
+        assert!(config.binary_cache_policy.is_none());
+        assert!(config.confirmation_policy.is_none());
+        assert!(config.rollback_policy.is_none());
+        assert!(config.max_retained_versions.is_none());
+    }
+
+    /// Regression: `HotswapConfig` with unknown future fields should not fail.
+    #[test]
+    fn config_ignores_unknown_fields() {
+        let json = serde_json::json!({
+            "pubkey": "RWtest",
+            "some_future_field": true,
+            "another_field": 42
+        });
+        // Should not error — serde default behavior is to ignore unknown fields
+        let config: HotswapConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(config.pubkey, "RWtest");
     }
 }

@@ -85,6 +85,10 @@ Add to your `tauri.conf.json`:
 }
 ```
 
+> **Config source matters:**
+> - `init(context)` reads `plugins.hotswap` from `tauri.conf.json` and requires it.
+> - `init_with_config(context, config)` and `HotswapBuilder` are programmatic paths; `plugins.hotswap` in JSON is optional for these.
+
 ### 3. Register the plugin
 
 ```rust
@@ -101,6 +105,16 @@ pub fn run() {
         .run(context)
         .expect("error running app");
 }
+```
+
+Programmatic alternative (no `plugins.hotswap` required in `tauri.conf.json`):
+
+```rust
+let context = tauri::generate_context!();
+let config = tauri_plugin_hotswap::HotswapConfig::new("<YOUR_MINISIGN_PUBKEY>")
+    .endpoint("https://your-server.com/api/updates/{{current_sequence}}");
+let (hotswap, context) = tauri_plugin_hotswap::init_with_config(context, config)
+    .expect("failed to initialize hotswap");
 ```
 
 ### 4. Add capability

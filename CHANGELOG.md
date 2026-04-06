@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.3] — 2026-04-06
+
+### Fixed
+
+- **Startup crash when `plugins.hotswap` is absent from `tauri.conf.json`**: Apps using `init_with_config()` or `HotswapBuilder` (without a `plugins.hotswap` JSON section) crashed on startup. Switched plugin builder config type from `HotswapConfig` to `serde_json::Value` so Tauri accepts both `null` and JSON objects during `Builder::run()`.
+
+### Changed
+
+- `init()`, `init_with_config()`, and `HotswapBuilder::build()` now return `HotswapPlugin<R>` (alias for `TauriPlugin<R, serde_json::Value>`)
+
 ## [0.0.2] — 2026-04-06
 
 ### Added
@@ -105,6 +115,7 @@ Initial release. Open-source OTA frontend updates for Tauri v2.
 - `configure()`, `getConfig()`
 - `onDownloadProgress()`, `onLifecycle()`
 
-[Unreleased]: https://github.com/denniskribl/tauri-plugin-hotswap/compare/v0.0.2...HEAD
+[Unreleased]: https://github.com/denniskribl/tauri-plugin-hotswap/compare/v0.0.3...HEAD
+[0.0.3]: https://github.com/denniskribl/tauri-plugin-hotswap/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/denniskribl/tauri-plugin-hotswap/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/denniskribl/tauri-plugin-hotswap/releases/tag/v0.0.1

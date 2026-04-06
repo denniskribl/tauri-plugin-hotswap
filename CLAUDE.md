@@ -75,5 +75,5 @@ Exports: `checkUpdate`, `applyUpdate`, `downloadUpdate`, `activateUpdate`, `roll
 - **Runtime config changes are memory-only** — they don't persist across app restarts.
 - **Two versions retained on disk** (current + previous for rollback). Older versions are cleaned up.
 - **Atomic operations**: temp dir + rename pattern for crash safety during extraction and pointer updates.
-- **Plugin builder must specify config type**: Use `Builder::<R, HotswapConfig>::new("hotswap")`, not `Builder::new("hotswap")`. Without the config type parameter, Tauri cannot deserialize `plugins.hotswap` from the config on mobile, causing a crash during `Builder::run()`.
+- **Plugin builder config type must accept any JSON**: Tauri always deserializes `plugins.hotswap` during `Builder::run()`, including `null` when the section is absent. Use a permissive type (`serde_json::Value`) for the builder API config generic, then parse `HotswapConfig` explicitly in `init()` / `init_with_config()` paths.
 - **Mobile dev mode bypasses Assets trait**: `cargo tauri ios dev` / `android dev` proxy all asset requests to the dev server — `Assets::get()` is never called. Use `cargo tauri ios build --debug` / `android build --debug` to test real OTA asset serving.
