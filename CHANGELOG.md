@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.2] — 2026-04-06
+
+### Added
+
+- iOS platform support
+- Debug logging in `HotswapAssets::get()` for diagnosing asset resolution issues
+- Local testing guide (`docs/local-testing.md`) with test server example
+- App Store / Google Play compliance disclaimer in README
+- Mobile-compatible example app (`lib.rs` + `main.rs` split for iOS/Android)
+- README included in npm package (`tauri-plugin-hotswap-api`)
+- 34 new unit tests (73 total, up from 39): asset fallback chains, `check_update` with mock resolver, signature verification, extraction edge cases, compatibility scenarios
+
+### Fixed
+
+- **Mobile crash on startup**: Plugin builder now declares `HotswapConfig` as its config type (`Builder::<R, HotswapConfig>::new("hotswap")`). Without this, Tauri's plugin system failed to deserialize `plugins.hotswap` from the config on iOS and Android, causing a crash during app initialization.
+
+### Changed
+
+- Return types of `init()`, `init_with_config()`, and `HotswapBuilder::build()` changed from `TauriPlugin<R>` to `TauriPlugin<R, HotswapConfig>` (required for the mobile fix; transparent to most users since the type is passed directly to `.plugin()`)
+
 ## [0.0.1] — 2026-04-05
 
 Initial release. Open-source OTA frontend updates for Tauri v2.
@@ -67,5 +87,6 @@ Initial release. Open-source OTA frontend updates for Tauri v2.
 - `configure()`, `getConfig()`
 - `onDownloadProgress()`, `onLifecycle()`
 
-[Unreleased]: https://github.com/denniskribl/tauri-plugin-hotswap/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/denniskribl/tauri-plugin-hotswap/compare/v0.0.2...HEAD
+[0.0.2]: https://github.com/denniskribl/tauri-plugin-hotswap/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/denniskribl/tauri-plugin-hotswap/releases/tag/v0.0.1

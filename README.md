@@ -35,7 +35,9 @@ It works by swapping Tauri's embedded asset provider at startup. The WebView kee
 | Windows  | ✅        |
 | Linux    | ✅        |
 | Android  | ✅        |
-| iOS      | 🔜        |
+| iOS      | ✅        |
+
+> **⚠️ App Store / Google Play note:** OTA updates that swap frontend assets (HTML, CSS, JS) within a WebView are generally permitted, but policies can change. Review [Apple's App Store Review Guidelines (3.3.2)](https://developer.apple.com/app-store/review/guidelines/#software-requirements) and [Google Play's Device and Network Abuse policy](https://support.google.com/googleplay/android-developer/answer/9888379) before shipping to ensure your use case complies with the latest rules.
 
 ### How it works
 

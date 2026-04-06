@@ -960,6 +960,240 @@ mod tests {
         assert!(tmp.path().join("seq-1").exists());
     }
 
+    // ── Mock resolver for check_update tests ──────────────────────────
+
+    struct MockResolver {
+        result: std::sync::Mutex<Result<Option<HotswapManifest>>>,
+    }
+
+    impl MockResolver {
+        fn returning_none() -> Self {
+            Self {
+                result: std::sync::Mutex::new(Ok(None)),
+            }
+        }
+
+        fn returning_manifest(m: HotswapManifest) -> Self {
+            Self {
+                result: std::sync::Mutex::new(Ok(Some(m))),
+            }
+        }
+    }
+
+    impl crate::resolver::HotswapResolver for MockResolver {
+        fn check(
+            &self,
+            _ctx: &crate::resolver::CheckContext,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Option<HotswapManifest>>> + Send>,
+        > {
+            let result = {
+                let mut guard = self.result.lock().unwrap();
+                std::mem::replace(&mut *guard, Ok(None))
+            };
+            Box::pin(async move { result })
+        }
+    }
+
+    fn make_check_ctx(
+        binary_version: &str,
+        current_sequence: u64,
+    ) -> crate::resolver::CheckContext {
+        crate::resolver::CheckContext {
+            current_sequence,
+            binary_version: binary_version.to_string(),
+            platform: "macos",
+            arch: "aarch64",
+            channel: None,
+            headers: HashMap::new(),
+            endpoint_override: None,
+        }
+    }
+
+    fn make_manifest(sequence: u64, min_binary_version: &str) -> HotswapManifest {
+        HotswapManifest {
+            version: format!("1.0.0-ota.{}", sequence),
+            sequence,
+            url: "https://cdn.example.com/bundle.tar.gz".into(),
+            signature: "sig".into(),
+            min_binary_version: min_binary_version.into(),
+            notes: None,
+            pub_date: None,
+            mandatory: None,
+            bundle_size: None,
+        }
+    }
+
+    // ── check_update tests ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_check_update_resolver_returns_none() {
+        let resolver = MockResolver::returning_none();
+        let ctx = make_check_ctx("1.0.0", 5);
+        let result = check_update(&resolver, &ctx, None::<&tauri::AppHandle<tauri::Wry>>)
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_check_update_sequence_not_newer() {
+        let resolver = MockResolver::returning_manifest(make_manifest(5, "1.0.0"));
+        let ctx = make_check_ctx("1.0.0", 5);
+        let result = check_update(&resolver, &ctx, None::<&tauri::AppHandle<tauri::Wry>>)
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_check_update_sequence_older() {
+        let resolver = MockResolver::returning_manifest(make_manifest(3, "1.0.0"));
+        let ctx = make_check_ctx("1.0.0", 5);
+        let result = check_update(&resolver, &ctx, None::<&tauri::AppHandle<tauri::Wry>>)
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_check_update_binary_incompatible() {
+        let resolver = MockResolver::returning_manifest(make_manifest(10, "2.0.0"));
+        let ctx = make_check_ctx("1.0.0", 5);
+        let result = check_update(&resolver, &ctx, None::<&tauri::AppHandle<tauri::Wry>>)
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_check_update_valid_newer_manifest() {
+        let resolver = MockResolver::returning_manifest(make_manifest(10, "1.0.0"));
+        let ctx = make_check_ctx("1.0.0", 5);
+        let result = check_update(&resolver, &ctx, None::<&tauri::AppHandle<tauri::Wry>>)
+            .await
+            .unwrap();
+        assert!(result.is_some());
+        let manifest = result.unwrap();
+        assert_eq!(manifest.sequence, 10);
+    }
+
+    #[tokio::test]
+    async fn test_check_update_invalid_semver_in_manifest() {
+        let resolver = MockResolver::returning_manifest(make_manifest(10, "not-semver"));
+        let ctx = make_check_ctx("1.0.0", 5);
+        let result = check_update(&resolver, &ctx, None::<&tauri::AppHandle<tauri::Wry>>).await;
+        assert!(matches!(result, Err(Error::Version(_))));
+    }
+
+    #[tokio::test]
+    async fn test_check_update_invalid_binary_version() {
+        let resolver = MockResolver::returning_manifest(make_manifest(10, "1.0.0"));
+        let ctx = make_check_ctx("bad-version", 5);
+        let result = check_update(&resolver, &ctx, None::<&tauri::AppHandle<tauri::Wry>>).await;
+        assert!(matches!(result, Err(Error::Version(_))));
+    }
+
+    // ── extract edge cases ────────────────────────────────────────────
+
+    #[test]
+    fn test_extract_tar_gz_nested_directories() {
+        let tmp = TempDir::new().unwrap();
+        let dest = tmp.path().join("out");
+        fs::create_dir_all(&dest).unwrap();
+
+        let buf = Vec::new();
+        let enc = flate2::write::GzEncoder::new(buf, flate2::Compression::default());
+        let mut builder = tar::Builder::new(enc);
+
+        let data = b"body { color: red; }";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(data.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "assets/css/style.css", &data[..])
+            .unwrap();
+
+        let compressed = builder.into_inner().unwrap().finish().unwrap();
+        extract_tar_gz(&compressed, &dest).unwrap();
+
+        assert!(dest.join("assets/css/style.css").exists());
+        assert_eq!(
+            fs::read_to_string(dest.join("assets/css/style.css")).unwrap(),
+            "body { color: red; }"
+        );
+    }
+
+    #[test]
+    fn test_extract_tar_gz_corrupt_data() {
+        let tmp = TempDir::new().unwrap();
+        let dest = tmp.path().join("out");
+        fs::create_dir_all(&dest).unwrap();
+        let err = extract_tar_gz(b"not valid gzip", &dest).unwrap_err();
+        assert!(matches!(err, Error::Extraction(_)));
+    }
+
+    // ── check_compatibility edge cases ────────────────────────────────
+
+    #[test]
+    fn test_check_compatibility_unconfirmed_no_previous() {
+        let tmp = TempDir::new().unwrap();
+        create_version(&tmp.path().join("seq-1"), "v1", 1, "1.0.0", false);
+        set_current(tmp.path(), "seq-1");
+        assert_eq!(check_compatibility(tmp.path(), "1.0.0", true), None);
+    }
+
+    #[test]
+    fn test_check_compatibility_binary_downgrade() {
+        let tmp = TempDir::new().unwrap();
+        create_version(&tmp.path().join("seq-1"), "v1", 1, "2.0.0", true);
+        set_current(tmp.path(), "seq-1");
+        assert_eq!(check_compatibility(tmp.path(), "1.0.0", true), None);
+    }
+
+    #[test]
+    fn test_check_compatibility_discard_on_upgrade_false() {
+        let tmp = TempDir::new().unwrap();
+        let seq1 = tmp.path().join("seq-1");
+        create_version(&seq1, "v1", 1, "1.0.0", true);
+        set_current(tmp.path(), "seq-1");
+        assert_eq!(check_compatibility(tmp.path(), "2.0.0", false), Some(seq1));
+    }
+
+    #[test]
+    fn test_check_compatibility_discard_on_upgrade_true() {
+        let tmp = TempDir::new().unwrap();
+        create_version(&tmp.path().join("seq-1"), "v1", 1, "1.0.0", true);
+        set_current(tmp.path(), "seq-1");
+        assert_eq!(check_compatibility(tmp.path(), "2.0.0", true), None);
+        assert!(!tmp.path().join("seq-1").exists());
+    }
+
+    // ── cleanup edge cases ────────────────────────────────────────────
+
+    #[test]
+    fn test_cleanup_only_current_version() {
+        let tmp = TempDir::new().unwrap();
+        create_version(&tmp.path().join("seq-5"), "v5", 5, "1.0.0", true);
+        set_current(tmp.path(), "seq-5");
+        cleanup_old_versions(tmp.path());
+        assert!(tmp.path().join("seq-5").exists());
+    }
+
+    #[test]
+    fn test_cleanup_three_versions_keeps_two() {
+        let tmp = TempDir::new().unwrap();
+        create_version(&tmp.path().join("seq-1"), "v1", 1, "1.0.0", true);
+        create_version(&tmp.path().join("seq-2"), "v2", 2, "1.0.0", true);
+        create_version(&tmp.path().join("seq-3"), "v3", 3, "1.0.0", true);
+        set_current(tmp.path(), "seq-3");
+        cleanup_old_versions(tmp.path());
+        assert!(tmp.path().join("seq-3").exists());
+        assert!(tmp.path().join("seq-2").exists());
+        assert!(!tmp.path().join("seq-1").exists());
+    }
+
     #[test]
     fn test_cleanup_numeric_sorting_large_sequences() {
         let tmp = TempDir::new().unwrap();

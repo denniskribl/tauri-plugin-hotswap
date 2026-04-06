@@ -3,6 +3,10 @@ name = "hotswap-example"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "hotswap_example"
+crate-type = ["staticlib", "cdylib", "lib"]
+
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-hotswap = { path = "../../.." }

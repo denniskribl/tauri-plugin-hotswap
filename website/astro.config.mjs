@@ -49,6 +49,7 @@ export default defineConfig({
             { label: 'Configuration', slug: 'configuration' },
             { label: 'Creating Bundles', slug: 'creating-bundles' },
             { label: 'Server Contract', slug: 'server-contract' },
+            { label: 'Local Testing', slug: 'local-testing' },
           ],
         },
         {

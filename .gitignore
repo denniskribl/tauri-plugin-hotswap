@@ -10,3 +10,7 @@ book/
 *.swo
 .DS_Store
 .claude/
+guest-js/README.md
+examples/basic/test-server/
+**/gen/apple/
+**/gen/android/

@@ -196,7 +196,7 @@ impl fmt::Debug for HotswapState {
 /// URL violates `require_https`.
 pub fn init<R: Runtime>(
     context: tauri::Context<R>,
-) -> Result<(TauriPlugin<R>, tauri::Context<R>), Error> {
+) -> Result<(TauriPlugin<R, HotswapConfig>, tauri::Context<R>), Error> {
     let config: HotswapConfig = context
         .config()
         .plugins
@@ -226,7 +226,7 @@ pub fn init<R: Runtime>(
 pub fn init_with_config<R: Runtime>(
     context: tauri::Context<R>,
     config: HotswapConfig,
-) -> Result<(TauriPlugin<R>, tauri::Context<R>), Error> {
+) -> Result<(TauriPlugin<R, HotswapConfig>, tauri::Context<R>), Error> {
     let endpoint = config
         .endpoint
         .clone()
@@ -326,7 +326,7 @@ impl HotswapBuilder {
     pub fn build<R: Runtime>(
         self,
         context: tauri::Context<R>,
-    ) -> Result<(TauriPlugin<R>, tauri::Context<R>), Error> {
+    ) -> Result<(TauriPlugin<R, HotswapConfig>, tauri::Context<R>), Error> {
         let resolver = self
             .resolver
             .ok_or_else(|| Error::Config("a resolver must be set via .resolver()".into()))?;
@@ -350,7 +350,7 @@ fn build_plugin<R: Runtime>(
     mut context: tauri::Context<R>,
     resolver: Box<dyn HotswapResolver>,
     config: HotswapConfig,
-) -> Result<(TauriPlugin<R>, tauri::Context<R>), Error> {
+) -> Result<(TauriPlugin<R, HotswapConfig>, tauri::Context<R>), Error> {
     let binary_version = context.config().version.clone().unwrap_or_default();
     let app_id = context.config().identifier.clone();
     let base_dir = resolve_base_dir(&app_id);
@@ -400,7 +400,7 @@ fn build_plugin<R: Runtime>(
     let current_version_clone = current_version.clone();
     let http_client = reqwest::Client::new();
 
-    let plugin = Builder::new("hotswap")
+    let plugin = Builder::<R, HotswapConfig>::new("hotswap")
         .invoke_handler(tauri::generate_handler![
             commands::hotswap_check,
             commands::hotswap_apply,
