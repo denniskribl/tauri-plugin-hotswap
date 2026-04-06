@@ -4,8 +4,7 @@ import starlightClientMermaid from '@pasqal-io/starlight-client-mermaid';
 import { ion } from 'starlight-ion-theme';
 
 export default defineConfig({
-  site: 'https://denniskribl.github.io',
-  base: '/tauri-plugin-hotswap',
+  site: 'https://hotswap.kribl.io',
   integrations: [
     starlight({
       title: '\u{1F525}\u{1F504} tauri-plugin-hotswap',
