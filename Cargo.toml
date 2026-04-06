@@ -34,7 +34,7 @@ thiserror = "2"
 base64 = "0.22"
 url = "2"
 dirs = "6"
-zip = { version = "2", optional = true }
+zip = { version = "8", optional = true }
 
 # TLS: native-tls on desktop, rustls on Android
 [target.'cfg(not(target_os = "android"))'.dependencies]
