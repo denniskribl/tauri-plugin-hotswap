@@ -49,6 +49,7 @@ export default defineConfig({
             { label: 'Configuration', slug: 'configuration' },
             { label: 'Creating Bundles', slug: 'creating-bundles' },
             { label: 'Server Contract', slug: 'server-contract' },
+            { label: 'Local Testing', slug: 'local-testing' },
           ],
         },
         {
@@ -56,6 +57,7 @@ export default defineConfig({
           items: [
             { label: 'API Reference', slug: 'api-reference' },
             { label: 'Architecture', slug: 'architecture' },
+            { label: 'Advanced Policies', slug: 'advanced-policies' },
             { label: 'Security', slug: 'security' },
             { label: 'Design Philosophy', slug: 'philosophy' },
           ],

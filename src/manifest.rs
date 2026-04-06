@@ -46,6 +46,11 @@ pub struct HotswapMeta {
     pub min_binary_version: String,
     /// Whether `notifyReady()` was called for this version.
     pub confirmed: bool,
+    /// Number of app launches where this version was active but `notifyReady()`
+    /// was not called. Used by [`ConfirmationPolicy`](crate::policy::ConfirmationPolicy)
+    /// to decide whether to grant a grace period or trigger rollback.
+    #[serde(default)]
+    pub unconfirmed_launch_count: u32,
 }
 
 /// Result returned to the frontend from `hotswap_check`.

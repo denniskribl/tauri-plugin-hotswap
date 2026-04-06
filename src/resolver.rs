@@ -406,4 +406,96 @@ mod tests {
         let resolver = HttpResolver::new("https://example.com/ota").with_headers(headers);
         assert_eq!(resolver.endpoint(), "https://example.com/ota");
     }
+
+    // ── HttpResolver URL building ──────────────────────────────────────
+
+    #[test]
+    fn test_http_resolver_url_sequence_zero() {
+        let endpoint = "https://example.com/ota/{{current_sequence}}/check";
+        let replaced = endpoint.replace("{{current_sequence}}", &0u64.to_string());
+        assert_eq!(replaced, "https://example.com/ota/0/check");
+    }
+
+    #[test]
+    fn test_http_resolver_url_sequence_large() {
+        let endpoint = "https://example.com/ota/{{current_sequence}}";
+        let replaced = endpoint.replace("{{current_sequence}}", &999999u64.to_string());
+        assert_eq!(replaced, "https://example.com/ota/999999");
+    }
+
+    #[test]
+    fn test_http_resolver_endpoint_override_used() {
+        let resolver = HttpResolver::new("https://original.example.com/ota");
+        let ctx = CheckContext {
+            current_sequence: 10,
+            binary_version: "2.0.0".into(),
+            platform: "windows",
+            arch: "x86_64",
+            channel: None,
+            headers: HashMap::new(),
+            endpoint_override: Some("https://override.example.com/v2/{{current_sequence}}".into()),
+        };
+        let base = ctx
+            .endpoint_override
+            .as_deref()
+            .unwrap_or(resolver.endpoint());
+        let raw = base.replace("{{current_sequence}}", &ctx.current_sequence.to_string());
+        assert!(raw.contains("override.example.com"));
+        assert!(raw.contains("10"));
+        assert!(!raw.contains("original.example.com"));
+    }
+
+    // ── HttpResolver header merging ────────────────────────────────────
+
+    #[test]
+    fn test_http_resolver_runtime_headers_override_init() {
+        let mut init_headers = HashMap::new();
+        init_headers.insert("Authorization".into(), "Bearer old".into());
+        init_headers.insert("X-Keep".into(), "kept".into());
+        let resolver = HttpResolver::new("https://example.com/ota").with_headers(init_headers);
+
+        let mut runtime_headers = HashMap::new();
+        runtime_headers.insert("Authorization".into(), "Bearer new".into());
+
+        let mut merged = resolver.headers.clone();
+        merged.extend(runtime_headers);
+
+        assert_eq!(merged.get("Authorization").unwrap(), "Bearer new");
+        assert_eq!(merged.get("X-Keep").unwrap(), "kept");
+    }
+
+    // ── StaticFileResolver edge cases ──────────────────────────────────
+
+    #[tokio::test]
+    async fn test_static_file_resolver_empty_json_object_errors() {
+        let tmp = TempDir::new().unwrap();
+        let manifest_path = tmp.path().join("latest.json");
+        fs::write(&manifest_path, "{}").unwrap();
+
+        let resolver = StaticFileResolver::new(manifest_path.to_string_lossy().to_string());
+        let result = resolver.check(&test_ctx(0)).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_static_file_resolver_extra_unknown_fields_ok() {
+        let tmp = TempDir::new().unwrap();
+        let manifest_path = tmp.path().join("latest.json");
+        let json = serde_json::json!({
+            "version": "3.0.0",
+            "sequence": 99,
+            "url": "https://cdn.example.com/bundle.tar.gz",
+            "signature": "sig",
+            "min_binary_version": "1.0.0",
+            "some_future_field": "hello",
+            "another_unknown": 42
+        })
+        .to_string();
+        fs::write(&manifest_path, json).unwrap();
+
+        let resolver = StaticFileResolver::new(manifest_path.to_string_lossy().to_string());
+        let result = resolver.check(&test_ctx(0)).await.unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().sequence, 99);
+    }
 }
