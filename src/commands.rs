@@ -162,7 +162,11 @@ pub async fn hotswap_apply<R: Runtime>(app: AppHandle<R>) -> Result<String> {
     let version_dir = updater::download_and_extract(&manifest, &opts, Some(&app)).await?;
 
     updater::activate_version(&state.base_dir, &version_dir)?;
-    updater::cleanup_old_versions(&state.base_dir);
+    updater::cleanup_old_versions(
+        &state.base_dir,
+        &*state.retention_policy,
+        &*state.rollback_policy,
+    );
 
     update_state_after_apply(&state, &manifest)?;
 
@@ -238,7 +242,11 @@ pub async fn hotswap_activate<R: Runtime>(app: AppHandle<R>) -> Result<String> {
     }
 
     updater::activate_version(&state.base_dir, &version_dir)?;
-    updater::cleanup_old_versions(&state.base_dir);
+    updater::cleanup_old_versions(
+        &state.base_dir,
+        &*state.retention_policy,
+        &*state.rollback_policy,
+    );
 
     update_state_after_apply(&state, &manifest)?;
 
@@ -305,7 +313,7 @@ fn update_state_after_apply(
 pub async fn hotswap_rollback<R: Runtime>(app: AppHandle<R>) -> Result<HotswapVersionInfo> {
     let state = app.state::<HotswapState>();
 
-    let rolled_back_to = updater::rollback(&state.base_dir);
+    let rolled_back_to = updater::rollback(&state.base_dir, &*state.rollback_policy);
     let new_dir = updater::resolve_current_dir(&state.base_dir);
     let new_meta = new_dir.as_ref().and_then(|d| updater::read_meta(d));
 
@@ -391,6 +399,7 @@ pub async fn hotswap_notify_ready<R: Runtime>(app: AppHandle<R>) -> Result<()> {
 
         if let Some(mut meta) = updater::read_meta(&version_dir) {
             meta.confirmed = true;
+            meta.unconfirmed_launch_count = 0;
             let json = serde_json::to_string_pretty(&meta)
                 .map_err(|e| Error::Serialization(e.to_string()))?;
             std::fs::write(version_dir.join("hotswap-meta.json"), json)?;

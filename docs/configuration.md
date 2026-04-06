@@ -23,7 +23,10 @@ There are three ways to configure the plugin, from simplest to most flexible.
       "max_bundle_size": 536870912,
       "max_retries": 3,
       "require_https": true,
-      "discard_on_binary_upgrade": true
+      "binary_cache_policy": "keep_compatible",
+      "confirmation_policy": "single_launch",
+      "rollback_policy": "latest_confirmed",
+      "max_retained_versions": 2
     }
   }
 }
@@ -60,7 +63,12 @@ let (plugin, context) = HotswapBuilder::new("<YOUR_MINISIGN_PUBKEY>")
     .max_bundle_size(256 * 1024 * 1024)
     .max_retries(5)
     .require_https(true)
-    .discard_on_binary_upgrade(false)
+    .binary_cache_policy(tauri_plugin_hotswap::BinaryCachePolicyKind::KeepCompatible)
+    .confirmation_policy(tauri_plugin_hotswap::ConfirmationPolicyKind::GracePeriod {
+        max_unconfirmed_launches: 3,
+    })
+    .rollback_policy(tauri_plugin_hotswap::RollbackPolicyKind::LatestConfirmed)
+    .max_retained_versions(3)
     .build(context)?;
 ```
 
@@ -77,7 +85,10 @@ let (plugin, context) = HotswapBuilder::new("<YOUR_MINISIGN_PUBKEY>")
 | `max_bundle_size` | `number` | `536870912` (512 MB) | Maximum download size in bytes. Downloads exceeding this are aborted immediately. Protects against memory exhaustion. |
 | `max_retries` | `number` | `3` | Number of download retry attempts. Uses exponential backoff: 1s, 2s, 4s, 8s, capped at 16s. |
 | `require_https` | `boolean` | `true` | Reject non-HTTPS URLs for both check and download requests. Set to `false` only for local development with `http://localhost`. |
-| `discard_on_binary_upgrade` | `boolean` | `true` | When the binary version is newer than the cached bundle's `min_binary_version`, discard the cache and fall back to embedded assets. Set to `false` if you want cached bundles to persist across binary upgrades. |
+| `binary_cache_policy` | `string` | `discard_on_upgrade` | Controls cache retention on binary upgrades. `keep_compatible` keeps the cache if the binary still satisfies `min_binary_version`. `discard_on_upgrade` discards when the binary is newer (default). `never_discard` never discards from policy. |
+| `confirmation_policy` | `string\|object` | `single_launch` | Controls what happens on startup if `notifyReady()` wasn't called. `single_launch` rolls back immediately (default). `{ "grace_period": { "max_unconfirmed_launches": 3 } }` allows N unconfirmed launches before rollback. |
+| `rollback_policy` | `string` | `latest_confirmed` | Controls rollback target. `latest_confirmed` picks the highest confirmed version. `immediate_previous_confirmed` picks the version just before current. `embedded_only` always falls back to embedded assets. |
+| `max_retained_versions` | `number` | `2` | Total versions to keep on disk (min: 2). Includes current and rollback candidate. |
 
 ---
 

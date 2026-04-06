@@ -107,7 +107,7 @@ The plugin enforces compatibility at three levels:
 
 1. **Server-side** (your responsibility): Only return manifests where `min_binary_version <= binary_version` from the query param.
 2. **Client-side (download)**: The plugin rejects the manifest if the running binary is older than `min_binary_version`.
-3. **Client-side (startup)**: Cached assets are discarded if the binary was upgraded past the cache's `min_binary_version` (configurable via `discard_on_binary_upgrade`).
+3. **Client-side (startup)**: Cached assets are discarded if the binary was upgraded past the cache's `min_binary_version` (configurable via `binary_cache_policy`).
 
 ---
 

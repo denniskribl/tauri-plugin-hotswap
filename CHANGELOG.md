@@ -11,13 +11,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- iOS platform support
+- **iOS platform support** — full OTA flow tested on simulator
+- **Configurable OTA policy traits** — four traits replace hardcoded behavior:
+  - `BinaryCachePolicy` — controls cache retention on binary upgrades (`keep_compatible`, `discard_on_upgrade`, `never_discard`)
+  - `ConfirmationPolicy` — configurable grace period for `notifyReady()` (`single_launch`, `grace_period { max_unconfirmed_launches }`)
+  - `RollbackPolicy` — configurable rollback target (`latest_confirmed`, `immediate_previous_confirmed`, `embedded_only`)
+  - `RetentionPolicy` — configurable version retention count (`max_retained_versions`, default 2)
+- **Custom policy injection** — `HotswapBuilder` setters accept `impl Policy` for all four traits, enabling custom implementations beyond the built-in enums
+- New config knobs: `binary_cache_policy`, `confirmation_policy`, `rollback_policy`, `max_retained_versions`
+- `HotswapMeta` gains `unconfirmed_launch_count` field (backward compatible via serde default)
 - Debug logging in `HotswapAssets::get()` for diagnosing asset resolution issues
-- Local testing guide (`docs/local-testing.md`) with test server example
+- Local testing guide (`docs/local-testing.md`) with example test server
 - App Store / Google Play compliance disclaimer in README
 - Mobile-compatible example app (`lib.rs` + `main.rs` split for iOS/Android)
 - README included in npm package (`tauri-plugin-hotswap-api`)
-- 34 new unit tests (73 total, up from 39): asset fallback chains, `check_update` with mock resolver, signature verification, extraction edge cases, compatibility scenarios
+- 66 new unit tests (105 total, up from 39)
 
 ### Fixed
 
@@ -26,6 +34,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Return types of `init()`, `init_with_config()`, and `HotswapBuilder::build()` changed from `TauriPlugin<R>` to `TauriPlugin<R, HotswapConfig>` (required for the mobile fix; transparent to most users since the type is passed directly to `.plugin()`)
+- `check_compatibility()`, `rollback()`, `cleanup_old_versions()` now accept policy trait references instead of booleans/hardcoded logic
+- `HotswapBuilder` gains `binary_cache_policy()`, `confirmation_policy()`, `rollback_policy()`, `retention_policy()`, `max_retained_versions()` setters — all accept custom `impl Policy` types
+
+### Breaking
+
+- **Removed `discard_on_binary_upgrade`** — the config field, builder method, and legacy mapping logic are removed entirely. Migrate as follows:
+  - `discard_on_binary_upgrade: true` → `binary_cache_policy: "discard_on_upgrade"` (or omit — this is the default)
+  - `discard_on_binary_upgrade: false` → `binary_cache_policy: "keep_compatible"`
+  - `HotswapBuilder::discard_on_binary_upgrade(true)` → `.binary_cache_policy(BinaryCachePolicyKind::DiscardOnUpgrade)`
+  - If you never set `discard_on_binary_upgrade`, no action needed — default behavior is unchanged
 
 ## [0.0.1] — 2026-04-05
 

@@ -57,6 +57,7 @@ export default defineConfig({
           items: [
             { label: 'API Reference', slug: 'api-reference' },
             { label: 'Architecture', slug: 'architecture' },
+            { label: 'Advanced Policies', slug: 'advanced-policies' },
             { label: 'Security', slug: 'security' },
             { label: 'Design Philosophy', slug: 'philosophy' },
           ],

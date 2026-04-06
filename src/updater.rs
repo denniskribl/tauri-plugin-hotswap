@@ -243,6 +243,7 @@ pub(crate) async fn download_and_extract<R: Runtime>(
             sequence: manifest.sequence,
             min_binary_version: manifest.min_binary_version.clone(),
             confirmed: false,
+            unconfirmed_launch_count: 0,
         },
     )?;
 
@@ -596,14 +597,46 @@ pub(crate) fn read_meta(version_dir: &Path) -> Option<HotswapMeta> {
 pub(crate) fn check_compatibility(
     base_dir: &Path,
     binary_version: &str,
-    discard_on_upgrade: bool,
+    cache_policy: &dyn crate::policy::BinaryCachePolicy,
+    confirmation_policy: &dyn crate::policy::ConfirmationPolicy,
+    rollback_policy: &dyn crate::policy::RollbackPolicy,
 ) -> Option<PathBuf> {
     let version_dir = resolve_current_dir(base_dir)?;
-    let meta = read_meta(&version_dir)?;
+    let mut meta = match read_meta(&version_dir) {
+        Some(m) => m,
+        None => {
+            log::warn!(
+                "[hotswap] Failed to read metadata from {}. Falling back to embedded.",
+                version_dir.display()
+            );
+            return None;
+        }
+    };
 
-    let required = Version::parse(&meta.min_binary_version).ok()?;
-    let current = Version::parse(binary_version).ok()?;
+    let required = match Version::parse(&meta.min_binary_version) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!(
+                "[hotswap] Invalid semver in min_binary_version '{}': {}. Falling back to embedded.",
+                meta.min_binary_version,
+                e
+            );
+            return None;
+        }
+    };
+    let current = match Version::parse(binary_version) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!(
+                "[hotswap] Invalid semver in binary_version '{}': {}. Falling back to embedded.",
+                binary_version,
+                e
+            );
+            return None;
+        }
+    };
 
+    // Safety invariant: binary too old → always fall back (not trait-controlled)
     if current < required {
         log::warn!(
             "[hotswap] Cached v{} requires binary >= {}, current is {}. Falling back to embedded.",
@@ -614,61 +647,131 @@ pub(crate) fn check_compatibility(
         return None;
     }
 
-    if discard_on_upgrade && current > required {
+    if cache_policy.should_discard(&current, &meta, None) {
         log::info!(
-            "[hotswap] Binary {} is newer than cached base {}. Discarding stale cache.",
+            "[hotswap] Binary cache policy discards cached v{} (binary={}, min={}).",
+            meta.version,
             binary_version,
             meta.min_binary_version
         );
-        let _ = std::fs::remove_file(base_dir.join("current"));
-        let _ = std::fs::remove_dir_all(&version_dir);
+        if let Err(e) = std::fs::remove_file(base_dir.join("current")) {
+            log::warn!("[hotswap] Failed to remove current pointer: {}", e);
+        }
+        if let Err(e) = std::fs::remove_dir_all(&version_dir) {
+            log::warn!(
+                "[hotswap] Failed to remove version dir {}: {}",
+                version_dir.display(),
+                e
+            );
+        }
         return None;
     }
 
     if !meta.confirmed {
-        log::warn!(
-            "[hotswap] v{} was not confirmed (notifyReady not called). Rolling back.",
-            meta.version
-        );
-        rollback(base_dir);
-        return resolve_current_dir(base_dir).and_then(|dir| {
-            let prev_meta = read_meta(&dir)?;
-            if prev_meta.confirmed {
-                Some(dir)
-            } else {
-                None
+        use crate::policy::ConfirmationDecision;
+        match confirmation_policy.on_startup_unconfirmed(&meta) {
+            ConfirmationDecision::KeepForNow => {
+                log::info!(
+                    "[hotswap] v{} unconfirmed (launch {}), keeping for now.",
+                    meta.version,
+                    meta.unconfirmed_launch_count + 1
+                );
+                meta.unconfirmed_launch_count += 1;
+                if let Err(e) = write_meta_file(&version_dir, &meta) {
+                    log::error!(
+                        "[hotswap] Failed to persist unconfirmed launch count for {}: {}",
+                        version_dir.display(),
+                        e
+                    );
+                }
+                return Some(version_dir);
             }
-        });
+            ConfirmationDecision::RollbackNow => {
+                log::warn!(
+                    "[hotswap] v{} was not confirmed (notifyReady not called). Rolling back.",
+                    meta.version
+                );
+                rollback(base_dir, rollback_policy);
+                return resolve_current_dir(base_dir).and_then(|dir| {
+                    let prev_meta = read_meta(&dir)?;
+                    if prev_meta.confirmed {
+                        Some(dir)
+                    } else {
+                        None
+                    }
+                });
+            }
+        }
     }
 
     Some(version_dir)
 }
 
-pub(crate) fn rollback(base_dir: &Path) -> Option<String> {
+pub(crate) fn rollback(
+    base_dir: &Path,
+    rollback_policy: &dyn crate::policy::RollbackPolicy,
+) -> Option<String> {
     let current_pointer = base_dir.join("current");
     let raw = std::fs::read_to_string(&current_pointer).ok()?;
     let current_version = validate_pointer(&raw)?.to_string();
+    let current_seq = parse_seq(&current_version);
 
-    let _ = std::fs::remove_file(&current_pointer);
+    if let Err(e) = std::fs::remove_file(&current_pointer) {
+        log::warn!(
+            "[hotswap] Failed to remove current pointer during rollback: {}",
+            e
+        );
+    }
 
     let broken_dir = base_dir.join(&current_version);
     if broken_dir.exists() {
-        let _ = std::fs::remove_dir_all(&broken_dir);
+        if let Err(e) = std::fs::remove_dir_all(&broken_dir) {
+            log::warn!(
+                "[hotswap] Failed to remove broken version dir {}: {}",
+                broken_dir.display(),
+                e
+            );
+        }
     }
 
+    // Collect confirmed candidates from remaining version dirs, sorted desc
     let versions = sorted_version_dirs(base_dir);
-
-    if let Some((_, prev)) = versions.first() {
-        let prev_name = prev.file_name().to_string_lossy().to_string();
-        let prev_dir = base_dir.join(&prev_name);
-        if let Some(meta) = read_meta(&prev_dir) {
+    let confirmed_candidates: Vec<HotswapMeta> = versions
+        .iter()
+        .filter_map(|(_, entry)| {
+            let dir = entry.path();
+            let meta = read_meta(&dir)?;
             if meta.confirmed {
-                let tmp_link = base_dir.join("current.tmp");
-                let _ = std::fs::write(&tmp_link, &prev_name);
-                let _ = std::fs::rename(&tmp_link, &current_pointer);
-                log::info!("[hotswap] Rolled back to {}", prev_name);
-                return Some(meta.version);
+                Some(meta)
+            } else {
+                None
             }
+        })
+        .collect();
+
+    if let Some(target_seq) = rollback_policy.select_target(current_seq, &confirmed_candidates) {
+        let target_name = format!("seq-{}", target_seq);
+        let target_dir = base_dir.join(&target_name);
+        if let Some(meta) = read_meta(&target_dir) {
+            let tmp_link = base_dir.join("current.tmp");
+            if let Err(e) = std::fs::write(&tmp_link, &target_name) {
+                log::error!(
+                    "[hotswap] Failed to write rollback pointer for {}: {}",
+                    target_name,
+                    e
+                );
+                return None;
+            }
+            if let Err(e) = std::fs::rename(&tmp_link, &current_pointer) {
+                log::error!(
+                    "[hotswap] Failed to activate rollback pointer for {}: {}",
+                    target_name,
+                    e
+                );
+                return None;
+            }
+            log::info!("[hotswap] Rolled back to {}", target_name);
+            return Some(meta.version);
         }
     }
 
@@ -676,20 +779,54 @@ pub(crate) fn rollback(base_dir: &Path) -> Option<String> {
     None
 }
 
-pub(crate) fn cleanup_old_versions(base_dir: &Path) {
-    let current_name = std::fs::read_to_string(base_dir.join("current"))
+pub(crate) fn cleanup_old_versions(
+    base_dir: &Path,
+    retention_policy: &dyn crate::policy::RetentionPolicy,
+    rollback_policy: &dyn crate::policy::RollbackPolicy,
+) {
+    let current_seq = std::fs::read_to_string(base_dir.join("current"))
         .ok()
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+        .and_then(|raw| parse_seq(raw.trim()));
 
     let versions = sorted_version_dirs(base_dir);
 
-    for (_, entry) in versions.iter().skip(2) {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name != current_name {
-            log::info!("[hotswap] Cleaning up old version: {}", name);
-            let _ = std::fs::remove_dir_all(entry.path());
+    // Collect all available version metas (sorted desc by sequence)
+    let available: Vec<HotswapMeta> = versions
+        .iter()
+        .filter_map(|(_, entry)| read_meta(&entry.path()))
+        .collect();
+
+    // Determine rollback candidate
+    let confirmed_candidates: Vec<HotswapMeta> =
+        available.iter().filter(|m| m.confirmed).cloned().collect();
+    let rollback_candidate = rollback_policy.select_target(current_seq, &confirmed_candidates);
+
+    // Ask retention policy which sequences to keep
+    let mut kept =
+        retention_policy.select_kept_sequences(current_seq, rollback_candidate, &available);
+
+    // Safety floor: always preserve current + rollback candidate,
+    // even if the policy didn't include them.
+    if let Some(seq) = current_seq {
+        kept.insert(seq);
+    }
+    if let Some(seq) = rollback_candidate {
+        kept.insert(seq);
+    }
+
+    for (seq, entry) in &versions {
+        if !kept.contains(seq) {
+            log::info!(
+                "[hotswap] Cleaning up old version: {}",
+                entry.file_name().to_string_lossy()
+            );
+            if let Err(e) = std::fs::remove_dir_all(entry.path()) {
+                log::warn!(
+                    "[hotswap] Failed to remove old version {}: {}",
+                    entry.file_name().to_string_lossy(),
+                    e
+                );
+            }
         }
     }
 
@@ -699,7 +836,9 @@ pub(crate) fn cleanup_old_versions(base_dir: &Path) {
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with(".tmp-seq-") {
                 log::info!("[hotswap] Cleaning up temp dir: {}", name);
-                let _ = std::fs::remove_dir_all(entry.path());
+                if let Err(e) = std::fs::remove_dir_all(entry.path()) {
+                    log::warn!("[hotswap] Failed to remove temp dir {}: {}", name, e);
+                }
             }
         }
     }
@@ -708,6 +847,7 @@ pub(crate) fn cleanup_old_versions(base_dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy::*;
     use std::fs;
     use tempfile::TempDir;
 
@@ -721,6 +861,7 @@ mod tests {
                 sequence,
                 min_binary_version: min_bin.to_string(),
                 confirmed,
+                unconfirmed_launch_count: 0,
             },
         )
         .unwrap();
@@ -815,6 +956,7 @@ mod tests {
                 sequence: 1,
                 min_binary_version: "1.0.0".into(),
                 confirmed: false,
+                unconfirmed_launch_count: 0,
             },
         )
         .unwrap();
@@ -851,7 +993,16 @@ mod tests {
         let seq1 = tmp.path().join("seq-1");
         create_version(&seq1, "1.0.0-ota.1", 1, "1.0.0", true);
         set_current(tmp.path(), "seq-1");
-        assert_eq!(check_compatibility(tmp.path(), "1.0.0", true), Some(seq1));
+        assert_eq!(
+            check_compatibility(
+                tmp.path(),
+                "1.0.0",
+                &BinaryCachePolicyKind::DiscardOnUpgrade,
+                &ConfirmationPolicyKind::SingleLaunch,
+                &RollbackPolicyKind::LatestConfirmed,
+            ),
+            Some(seq1)
+        );
     }
 
     #[test]
@@ -861,7 +1012,13 @@ mod tests {
         create_version(&tmp.path().join("seq-2"), "v2", 2, "1.0.0", false);
         set_current(tmp.path(), "seq-2");
         assert_eq!(
-            check_compatibility(tmp.path(), "1.0.0", true),
+            check_compatibility(
+                tmp.path(),
+                "1.0.0",
+                &BinaryCachePolicyKind::DiscardOnUpgrade,
+                &ConfirmationPolicyKind::SingleLaunch,
+                &RollbackPolicyKind::LatestConfirmed,
+            ),
             Some(tmp.path().join("seq-1"))
         );
     }
@@ -884,7 +1041,10 @@ mod tests {
         create_version(&tmp.path().join("seq-1"), "v1", 1, "1.0.0", true);
         create_version(&tmp.path().join("seq-2"), "v2", 2, "1.0.0", true);
         set_current(tmp.path(), "seq-2");
-        assert_eq!(rollback(tmp.path()), Some("v1".to_string()));
+        assert_eq!(
+            rollback(tmp.path(), &RollbackPolicyKind::LatestConfirmed),
+            Some("v1".to_string())
+        );
         assert_eq!(
             fs::read_to_string(tmp.path().join("current")).unwrap(),
             "seq-1"
@@ -904,7 +1064,11 @@ mod tests {
             );
         }
         set_current(tmp.path(), "seq-4");
-        cleanup_old_versions(tmp.path());
+        cleanup_old_versions(
+            tmp.path(),
+            &RetentionConfig::default(),
+            &RollbackPolicyKind::LatestConfirmed,
+        );
         assert!(tmp.path().join("seq-4").exists());
         assert!(tmp.path().join("seq-3").exists());
         assert!(!tmp.path().join("seq-1").exists());
@@ -954,7 +1118,11 @@ mod tests {
         fs::create_dir_all(tmp.path().join(".tmp-seq-2")).unwrap();
         fs::write(tmp.path().join(".tmp-seq-2/index.html"), "partial").unwrap();
 
-        cleanup_old_versions(tmp.path());
+        cleanup_old_versions(
+            tmp.path(),
+            &RetentionConfig::default(),
+            &RollbackPolicyKind::LatestConfirmed,
+        );
 
         assert!(!tmp.path().join(".tmp-seq-2").exists());
         assert!(tmp.path().join("seq-1").exists());
@@ -1141,7 +1309,16 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         create_version(&tmp.path().join("seq-1"), "v1", 1, "1.0.0", false);
         set_current(tmp.path(), "seq-1");
-        assert_eq!(check_compatibility(tmp.path(), "1.0.0", true), None);
+        assert_eq!(
+            check_compatibility(
+                tmp.path(),
+                "1.0.0",
+                &BinaryCachePolicyKind::DiscardOnUpgrade,
+                &ConfirmationPolicyKind::SingleLaunch,
+                &RollbackPolicyKind::LatestConfirmed,
+            ),
+            None
+        );
     }
 
     #[test]
@@ -1149,7 +1326,16 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         create_version(&tmp.path().join("seq-1"), "v1", 1, "2.0.0", true);
         set_current(tmp.path(), "seq-1");
-        assert_eq!(check_compatibility(tmp.path(), "1.0.0", true), None);
+        assert_eq!(
+            check_compatibility(
+                tmp.path(),
+                "1.0.0",
+                &BinaryCachePolicyKind::DiscardOnUpgrade,
+                &ConfirmationPolicyKind::SingleLaunch,
+                &RollbackPolicyKind::LatestConfirmed,
+            ),
+            None
+        );
     }
 
     #[test]
@@ -1158,7 +1344,16 @@ mod tests {
         let seq1 = tmp.path().join("seq-1");
         create_version(&seq1, "v1", 1, "1.0.0", true);
         set_current(tmp.path(), "seq-1");
-        assert_eq!(check_compatibility(tmp.path(), "2.0.0", false), Some(seq1));
+        assert_eq!(
+            check_compatibility(
+                tmp.path(),
+                "2.0.0",
+                &BinaryCachePolicyKind::NeverDiscard,
+                &ConfirmationPolicyKind::SingleLaunch,
+                &RollbackPolicyKind::LatestConfirmed,
+            ),
+            Some(seq1)
+        );
     }
 
     #[test]
@@ -1166,7 +1361,16 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         create_version(&tmp.path().join("seq-1"), "v1", 1, "1.0.0", true);
         set_current(tmp.path(), "seq-1");
-        assert_eq!(check_compatibility(tmp.path(), "2.0.0", true), None);
+        assert_eq!(
+            check_compatibility(
+                tmp.path(),
+                "2.0.0",
+                &BinaryCachePolicyKind::DiscardOnUpgrade,
+                &ConfirmationPolicyKind::SingleLaunch,
+                &RollbackPolicyKind::LatestConfirmed,
+            ),
+            None
+        );
         assert!(!tmp.path().join("seq-1").exists());
     }
 
@@ -1177,7 +1381,11 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         create_version(&tmp.path().join("seq-5"), "v5", 5, "1.0.0", true);
         set_current(tmp.path(), "seq-5");
-        cleanup_old_versions(tmp.path());
+        cleanup_old_versions(
+            tmp.path(),
+            &RetentionConfig::default(),
+            &RollbackPolicyKind::LatestConfirmed,
+        );
         assert!(tmp.path().join("seq-5").exists());
     }
 
@@ -1188,7 +1396,11 @@ mod tests {
         create_version(&tmp.path().join("seq-2"), "v2", 2, "1.0.0", true);
         create_version(&tmp.path().join("seq-3"), "v3", 3, "1.0.0", true);
         set_current(tmp.path(), "seq-3");
-        cleanup_old_versions(tmp.path());
+        cleanup_old_versions(
+            tmp.path(),
+            &RetentionConfig::default(),
+            &RollbackPolicyKind::LatestConfirmed,
+        );
         assert!(tmp.path().join("seq-3").exists());
         assert!(tmp.path().join("seq-2").exists());
         assert!(!tmp.path().join("seq-1").exists());
@@ -1208,7 +1420,11 @@ mod tests {
         }
         set_current(tmp.path(), "seq-100");
 
-        cleanup_old_versions(tmp.path());
+        cleanup_old_versions(
+            tmp.path(),
+            &RetentionConfig::default(),
+            &RollbackPolicyKind::LatestConfirmed,
+        );
 
         assert!(tmp.path().join("seq-100").exists());
         assert!(tmp.path().join("seq-11").exists());

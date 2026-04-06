@@ -40,6 +40,8 @@ mod commands;
 pub mod error;
 /// Manifest and response types exchanged between client and server.
 pub mod manifest;
+/// Configurable policy traits for OTA update lifecycle decisions.
+pub mod policy;
 /// Resolver trait and built-in implementations for update checking.
 pub mod resolver;
 mod updater;
@@ -60,6 +62,10 @@ use tauri::{
 pub use assets::HotswapAssets;
 pub use error::Error;
 pub use manifest::{HotswapCheckResult, HotswapManifest, HotswapMeta, HotswapVersionInfo};
+pub use policy::{
+    BinaryCachePolicy, BinaryCachePolicyKind, ConfirmationDecision, ConfirmationPolicy,
+    ConfirmationPolicyKind, RetentionConfig, RetentionPolicy, RollbackPolicy, RollbackPolicyKind,
+};
 pub use resolver::{CheckContext, HotswapResolver, HttpResolver, StaticFileResolver};
 pub use updater::{DownloadProgress, LifecycleEvent};
 
@@ -97,9 +103,27 @@ pub struct HotswapConfig {
     #[serde(default)]
     pub require_https: Option<bool>,
 
-    /// Whether to discard cache on binary upgrade. Default: true.
+    /// Binary cache policy. Controls whether cached OTA bundles are discarded
+    /// when the binary version changes.
+    /// Options: `keep_compatible`, `discard_on_upgrade`, `never_discard`.
     #[serde(default)]
-    pub discard_on_binary_upgrade: Option<bool>,
+    pub binary_cache_policy: Option<BinaryCachePolicyKind>,
+
+    /// Confirmation policy. Controls what happens on startup if the current
+    /// OTA version hasn't been confirmed via `notifyReady()`.
+    /// Options: `single_launch` (default), `{ "grace_period": { "max_unconfirmed_launches": N } }`.
+    #[serde(default)]
+    pub confirmation_policy: Option<ConfirmationPolicyKind>,
+
+    /// Rollback policy. Controls which version to roll back to.
+    /// Options: `latest_confirmed` (default), `immediate_previous_confirmed`, `embedded_only`.
+    #[serde(default)]
+    pub rollback_policy: Option<RollbackPolicyKind>,
+
+    /// Maximum number of OTA versions to retain on disk. Default: 2, min: 2.
+    /// Includes current and rollback candidate.
+    #[serde(default)]
+    pub max_retained_versions: Option<u32>,
 
     /// Custom HTTP headers sent on check and download requests.
     /// Use for auth tokens, API keys, etc.
@@ -125,7 +149,10 @@ impl HotswapConfig {
             pubkey: pubkey.into(),
             max_bundle_size: None,
             require_https: None,
-            discard_on_binary_upgrade: None,
+            binary_cache_policy: None,
+            confirmation_policy: None,
+            rollback_policy: None,
+            max_retained_versions: None,
             headers: None,
             channel: None,
             max_retries: None,
@@ -173,6 +200,9 @@ pub(crate) struct HotswapState {
     /// Updated by apply/activate/rollback so `window.location.reload()`
     /// immediately serves the new assets without an app restart.
     pub(crate) live_asset_dir: AssetDirHandle,
+    // Policy traits
+    pub(crate) rollback_policy: Box<dyn RollbackPolicy>,
+    pub(crate) retention_policy: Box<dyn RetentionPolicy>,
 }
 
 impl fmt::Debug for HotswapState {
@@ -217,7 +247,7 @@ pub fn init<R: Runtime>(
         resolver = resolver.with_headers(headers.clone());
     }
 
-    build_plugin(context, Box::new(resolver), config)
+    build_plugin(context, Box::new(resolver), config, None)
 }
 
 /// Initialize with explicit config (no tauri.conf.json needed).
@@ -237,7 +267,7 @@ pub fn init_with_config<R: Runtime>(
         resolver = resolver.with_headers(headers.clone());
     }
 
-    build_plugin(context, Box::new(resolver), config)
+    build_plugin(context, Box::new(resolver), config, None)
 }
 
 /// Builder for advanced usage with a custom resolver.
@@ -259,7 +289,10 @@ pub struct HotswapBuilder {
     resolver: Option<Box<dyn HotswapResolver>>,
     max_bundle_size: u64,
     require_https: bool,
-    discard_on_binary_upgrade: bool,
+    binary_cache_policy: Box<dyn BinaryCachePolicy>,
+    confirmation_policy: Box<dyn ConfirmationPolicy>,
+    rollback_policy: Box<dyn RollbackPolicy>,
+    retention_policy: Box<dyn RetentionPolicy>,
     headers: HashMap<String, String>,
     channel: Option<String>,
     max_retries: u32,
@@ -273,7 +306,10 @@ impl HotswapBuilder {
             resolver: None,
             max_bundle_size: updater::DEFAULT_MAX_BUNDLE_SIZE,
             require_https: true,
-            discard_on_binary_upgrade: true,
+            binary_cache_policy: Box::new(BinaryCachePolicyKind::DiscardOnUpgrade),
+            confirmation_policy: Box::new(ConfirmationPolicyKind::default()),
+            rollback_policy: Box::new(RollbackPolicyKind::default()),
+            retention_policy: Box::new(RetentionConfig::default()),
             headers: HashMap::new(),
             channel: None,
             max_retries: updater::DEFAULT_MAX_RETRIES,
@@ -298,9 +334,44 @@ impl HotswapBuilder {
         self
     }
 
-    /// Whether to discard cache when the binary is upgraded. Default: true.
-    pub fn discard_on_binary_upgrade(mut self, discard: bool) -> Self {
-        self.discard_on_binary_upgrade = discard;
+    /// Set the binary cache policy. Default: `DiscardOnUpgrade`.
+    /// Accepts any type implementing [`BinaryCachePolicy`], including
+    /// the built-in [`BinaryCachePolicyKind`] enum or a custom implementation.
+    pub fn binary_cache_policy(mut self, policy: impl BinaryCachePolicy) -> Self {
+        self.binary_cache_policy = Box::new(policy);
+        self
+    }
+
+    /// Set the confirmation policy. Default: `SingleLaunch`.
+    /// Accepts any type implementing [`ConfirmationPolicy`], including
+    /// the built-in [`ConfirmationPolicyKind`] enum or a custom implementation.
+    pub fn confirmation_policy(mut self, policy: impl ConfirmationPolicy) -> Self {
+        self.confirmation_policy = Box::new(policy);
+        self
+    }
+
+    /// Set the rollback policy. Default: `LatestConfirmed`.
+    /// Accepts any type implementing [`RollbackPolicy`], including
+    /// the built-in [`RollbackPolicyKind`] enum or a custom implementation.
+    pub fn rollback_policy(mut self, policy: impl RollbackPolicy) -> Self {
+        self.rollback_policy = Box::new(policy);
+        self
+    }
+
+    /// Set the retention policy. Default: `RetentionConfig { max_retained_versions: 2 }`.
+    /// Accepts any type implementing [`RetentionPolicy`], including
+    /// the built-in [`RetentionConfig`] or a custom implementation.
+    pub fn retention_policy(mut self, policy: impl RetentionPolicy) -> Self {
+        self.retention_policy = Box::new(policy);
+        self
+    }
+
+    /// Set the maximum number of retained versions. Default: 2, min: 2.
+    /// Shorthand for `retention_policy(RetentionConfig { max_retained_versions: count })`.
+    pub fn max_retained_versions(mut self, count: u32) -> Self {
+        self.retention_policy = Box::new(RetentionConfig {
+            max_retained_versions: count,
+        });
         self
     }
 
@@ -336,20 +407,39 @@ impl HotswapBuilder {
             pubkey: self.pubkey,
             max_bundle_size: Some(self.max_bundle_size),
             require_https: Some(self.require_https),
-            discard_on_binary_upgrade: Some(self.discard_on_binary_upgrade),
+            binary_cache_policy: None,
+            confirmation_policy: None,
+            rollback_policy: None,
+            max_retained_versions: None,
             headers: Some(self.headers),
             channel: self.channel,
             max_retries: Some(self.max_retries),
         };
 
-        build_plugin(context, resolver, config)
+        let policies = ResolvedPolicies {
+            binary_cache: self.binary_cache_policy,
+            confirmation: self.confirmation_policy,
+            rollback: self.rollback_policy,
+            retention: self.retention_policy,
+        };
+
+        build_plugin(context, resolver, config, Some(policies))
     }
+}
+
+/// Pre-resolved boxed policies (from builder path).
+struct ResolvedPolicies {
+    binary_cache: Box<dyn BinaryCachePolicy>,
+    confirmation: Box<dyn ConfirmationPolicy>,
+    rollback: Box<dyn RollbackPolicy>,
+    retention: Box<dyn RetentionPolicy>,
 }
 
 fn build_plugin<R: Runtime>(
     mut context: tauri::Context<R>,
     resolver: Box<dyn HotswapResolver>,
     config: HotswapConfig,
+    override_policies: Option<ResolvedPolicies>,
 ) -> Result<(TauriPlugin<R, HotswapConfig>, tauri::Context<R>), Error> {
     let binary_version = context.config().version.clone().unwrap_or_default();
     let app_id = context.config().identifier.clone();
@@ -358,10 +448,23 @@ fn build_plugin<R: Runtime>(
         .max_bundle_size
         .unwrap_or(updater::DEFAULT_MAX_BUNDLE_SIZE);
     let require_https = config.require_https.unwrap_or(true);
-    let discard_on_upgrade = config.discard_on_binary_upgrade.unwrap_or(true);
     let custom_headers = config.headers.unwrap_or_default();
     let channel = config.channel.clone();
     let max_retries = config.max_retries.unwrap_or(updater::DEFAULT_MAX_RETRIES);
+
+    // Resolve policies: builder overrides take precedence over config
+    let policies = override_policies.unwrap_or_else(|| ResolvedPolicies {
+        binary_cache: Box::new(
+            config
+                .binary_cache_policy
+                .unwrap_or(BinaryCachePolicyKind::DiscardOnUpgrade),
+        ),
+        confirmation: Box::new(config.confirmation_policy.unwrap_or_default()),
+        rollback: Box::new(config.rollback_policy.unwrap_or_default()),
+        retention: Box::new(RetentionConfig {
+            max_retained_versions: config.max_retained_versions.unwrap_or(2),
+        }),
+    });
 
     if binary_version.is_empty() {
         log::warn!(
@@ -380,7 +483,13 @@ fn build_plugin<R: Runtime>(
 
     let _ = std::fs::create_dir_all(&base_dir);
 
-    let ota_dir = updater::check_compatibility(&base_dir, &binary_version, discard_on_upgrade);
+    let ota_dir = updater::check_compatibility(
+        &base_dir,
+        &binary_version,
+        &*policies.binary_cache,
+        &*policies.confirmation,
+        &*policies.rollback,
+    );
     let meta = ota_dir.as_ref().and_then(|d| updater::read_meta(d));
     let current_sequence = meta.as_ref().map(|m| m.sequence).unwrap_or(0);
     let current_version = meta.map(|m| m.version);
@@ -429,6 +538,8 @@ fn build_plugin<R: Runtime>(
                 current_version: Mutex::new(current_version_clone),
                 pending_manifest: Mutex::new(None),
                 live_asset_dir,
+                rollback_policy: policies.rollback,
+                retention_policy: policies.retention,
             });
             Ok(())
         })
