@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4] — 2026-04-09
+
+### Added
+
+- **Cross-platform CI** — `cargo check` and `cargo test` now run on macOS and Windows in addition to Linux
+- **Rustdoc CI step** — docs are built with `-D warnings` to catch broken links and missing docs
+- **`documentation` field in `Cargo.toml`** — links to docs.rs from the crates.io page
+- **`#[non_exhaustive]` on public types** — `Error`, `HotswapConfig`, `HotswapManifest`, `HotswapMeta`, `HotswapCheckResult`, `HotswapVersionInfo`, `DownloadProgress`, `LifecycleEvent`, `ConfirmationDecision` are now non-exhaustive, preventing new fields/variants from being semver-breaking
+
+### Fixed
+
+- **Yanked dependency** — bumped `fastrand` 2.4.0 → 2.4.1
+- **README version drift** — quickstart now shows `0.0.4` instead of `0.0.1`
+- **Split doc comment on `DiscardOnUpgrade`** — doc block was interrupted by `#[default]` attribute
+
+### Changed
+
+- **Crate tarball trimmed** — added `exclude` to `Cargo.toml`, reducing package from 81 files to ~32
+- **CI consolidated** — merged separate Linux and cross-platform Rust jobs into a single matrix job
+
 ## [0.0.3] — 2026-04-06
 
 ### Fixed
@@ -115,7 +135,8 @@ Initial release. Open-source OTA frontend updates for Tauri v2.
 - `configure()`, `getConfig()`
 - `onDownloadProgress()`, `onLifecycle()`
 
-[Unreleased]: https://github.com/denniskribl/tauri-plugin-hotswap/compare/v0.0.3...HEAD
+[Unreleased]: https://github.com/denniskribl/tauri-plugin-hotswap/compare/v0.0.4...HEAD
+[0.0.4]: https://github.com/denniskribl/tauri-plugin-hotswap/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/denniskribl/tauri-plugin-hotswap/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/denniskribl/tauri-plugin-hotswap/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/denniskribl/tauri-plugin-hotswap/releases/tag/v0.0.1

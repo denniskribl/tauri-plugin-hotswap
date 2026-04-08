@@ -1,6 +1,6 @@
 {
   "name": "tauri-plugin-hotswap-api",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Open-source OTA frontend updates for Tauri v2 apps. Self-hosted, signed bundles, auto-rollback, runtime channels.",
   "license": "MIT OR Apache-2.0",
   "author": "denniskribl",

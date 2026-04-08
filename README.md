@@ -63,7 +63,7 @@ flowchart TD
 ```toml
 # src-tauri/Cargo.toml
 [dependencies]
-tauri-plugin-hotswap = "0.0.3"
+tauri-plugin-hotswap = "0.0.4"
 ```
 
 ```bash
