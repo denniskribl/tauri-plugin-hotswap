@@ -58,11 +58,11 @@ pub enum BinaryCachePolicyKind {
     KeepCompatible,
     /// Discard when `current_binary > min_binary_version`.
     /// This is the default, preserving pre-0.0.2 semantics.
-    #[default]
     ///
     /// Note: this detects "binary newer than min", not actual binary *changes*
     /// (e.g., rebuild at same version, downgrade). True change detection
     /// would require persisting the previous binary version (deferred).
+    #[default]
     DiscardOnUpgrade,
     /// Never discard based on binary version. Only the safety check
     /// (`binary < min`) still applies.
@@ -104,6 +104,7 @@ pub trait ConfirmationPolicy: Send + Sync + 'static {
 
 /// Decision returned by [`ConfirmationPolicy::on_startup_unconfirmed`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ConfirmationDecision {
     /// Keep the version for now. Caller increments `unconfirmed_launch_count`.
     KeepForNow,

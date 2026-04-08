@@ -6,10 +6,25 @@ rust-version = "1.77.2"
 license = "MIT OR Apache-2.0"
 description = "Open-source OTA plugin for Tauri v2 — push frontend updates to users without rebuilding the binary. Self-hosted, signed bundles, auto-rollback."
 repository = "https://github.com/denniskribl/tauri-plugin-hotswap"
+documentation = "https://docs.rs/tauri-plugin-hotswap"
 readme = "README.md"
 keywords = ["tauri", "plugin", "ota", "hotswap", "update"]
 categories = ["gui", "web-programming"]
 links = "tauri-plugin-hotswap"
+exclude = [
+    ".github/",
+    ".gitignore",
+    "website/",
+    "docs/",
+    "examples/",
+    "Cargo.lock",
+    "CLAUDE.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "deny.toml",
+    "rustfmt.toml",
+    "guest-js/pnpm-lock.yaml",
+]
 
 [lib]
 name = "tauri_plugin_hotswap"

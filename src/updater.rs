@@ -18,6 +18,7 @@ pub const DEFAULT_MAX_RETRIES: u32 = 3;
 
 /// Payload emitted on `hotswap://download-progress` events.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct DownloadProgress {
     /// Bytes downloaded so far.
     pub downloaded: u64,
@@ -27,6 +28,7 @@ pub struct DownloadProgress {
 
 /// Lifecycle event payload emitted on `hotswap://lifecycle`.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct LifecycleEvent {
     /// Event name (e.g. "check-start", "download-complete", "apply", "rollback").
     pub event: String,

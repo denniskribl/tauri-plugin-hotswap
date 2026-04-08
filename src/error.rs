@@ -1,5 +1,6 @@
 /// Errors returned by the hotswap plugin.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     /// Network request failed (check, download).
     #[error("network error: {0}")]

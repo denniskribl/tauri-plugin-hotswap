@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 /// All fields except `notes`, `pub_date`, `mandatory`, and `bundle_size`
 /// are required.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct HotswapManifest {
     /// Display version (e.g. "0.0.14-ota.2"). For UI only, never compared.
     pub version: String,
@@ -37,6 +38,7 @@ pub struct HotswapManifest {
 /// Persisted metadata about the currently active version.
 /// Stored as `{version_dir}/hotswap-meta.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct HotswapMeta {
     /// Display version string.
     pub version: String,
@@ -55,6 +57,7 @@ pub struct HotswapMeta {
 
 /// Result returned to the frontend from `hotswap_check`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct HotswapCheckResult {
     /// Whether an update is available.
     pub available: bool,
@@ -72,6 +75,7 @@ pub struct HotswapCheckResult {
 
 /// Result returned to the frontend from `hotswap_current_version`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct HotswapVersionInfo {
     /// The active display version, or null if using embedded assets.
     pub version: Option<String>,

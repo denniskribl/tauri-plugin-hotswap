@@ -11,6 +11,7 @@ book/
 .DS_Store
 .claude/
 guest-js/README.md
+website/src/content/docs/readme.md
 examples/basic/test-server/
 **/gen/apple/
 **/gen/android/

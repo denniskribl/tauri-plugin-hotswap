@@ -95,6 +95,7 @@ pub type HotswapPlugin<R> = TauriPlugin<R, Value>;
 /// }
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct HotswapConfig {
     /// The update check endpoint URL.
     /// Use `{{current_sequence}}` as a placeholder.
