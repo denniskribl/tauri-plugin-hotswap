@@ -87,6 +87,7 @@ jobs:
         uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe # v5
         with:
           files: lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
 
   guest-js:
     name: Guest JS
