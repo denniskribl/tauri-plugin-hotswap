@@ -399,10 +399,11 @@ pub async fn hotswap_notify_ready<R: Runtime>(app: AppHandle<R>) -> Result<()> {
     if current_sequence > 0 {
         let version_dir = state.base_dir.join(format!("seq-{}", current_sequence));
 
-        if let Some(mut meta) = updater::read_meta(&version_dir) {
-            meta.confirmed = true;
-            meta.unconfirmed_launch_count = 0;
-            updater::write_meta_file(&version_dir, &meta)?;
+        if let Some(meta) = updater::update_meta(&version_dir, |m| {
+            m.confirmed = true;
+            m.unconfirmed_launch_count = 0;
+            true
+        })? {
             log::info!("[hotswap] Sequence {} confirmed as ready", current_sequence);
 
             updater::emit_lifecycle(

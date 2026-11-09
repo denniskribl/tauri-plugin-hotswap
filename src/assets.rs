@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use tauri::utils::assets::{AssetKey, AssetsIter, CspHash};
 use tauri::Runtime;
 
@@ -19,9 +19,6 @@ pub struct HotswapAssets<R: Runtime> {
     /// `None` → serve embedded assets only.
     /// `Some(path)` → try filesystem first, fall back to embedded.
     ota_dir: AssetDirHandle,
-    /// Bundle directory whose trial was already recorded, so the metadata is
-    /// read and written at most once per activated bundle.
-    trial_recorded: Mutex<Option<PathBuf>>,
 }
 
 impl<R: Runtime> HotswapAssets<R> {
@@ -37,31 +34,25 @@ impl<R: Runtime> HotswapAssets<R> {
                 log::info!("[hotswap] No cached assets found, using embedded assets");
             }
         }
-        Self {
-            embedded,
-            ota_dir,
-            trial_recorded: Mutex::new(None),
-        }
+        Self { embedded, ota_dir }
     }
 
-    /// Record that a page was loaded from `dir`, starting the bundle's trial
-    /// (see [`HotswapMeta::trial_started`](crate::manifest::HotswapMeta::trial_started)).
+    /// Record that a page was loaded while the bundle in `dir` is active,
+    /// starting its trial (see
+    /// [`HotswapMeta::trial_started`](crate::manifest::HotswapMeta::trial_started)).
+    /// Called for every page (HTML) load, wherever the page itself is served
+    /// from, so partial bundles start their trial too. Pages load rarely, so
+    /// reading the small metadata file each time is cheap.
     fn record_trial_started(&self, dir: &Path) {
-        let Ok(mut recorded) = self.trial_recorded.lock() else {
-            return;
-        };
-        if recorded.as_deref() == Some(dir) {
-            return;
-        }
-        *recorded = Some(dir.to_path_buf());
-        if let Some(mut meta) = crate::updater::read_meta(dir) {
-            if !meta.confirmed && !meta.trial_started {
+        let result = crate::updater::update_meta(dir, |meta| {
+            let start = !meta.confirmed && !meta.trial_started;
+            if start {
                 meta.trial_started = true;
-                match crate::updater::write_meta_file(dir, &meta) {
-                    Ok(()) => log::info!("[hotswap] Trial started for v{}", meta.version),
-                    Err(e) => log::warn!("[hotswap] Failed to record trial start: {}", e),
-                }
             }
+            start
+        });
+        if let Err(e) = result {
+            log::warn!("[hotswap] Failed to record trial start: {}", e);
         }
     }
 }
@@ -151,8 +142,15 @@ impl<R: Runtime> tauri::Assets<R> for HotswapAssets<R> {
             }
         }
 
-        // Fall back to embedded assets
-        self.embedded.get(key)
+        // Fall back to embedded assets. A page served from there while an
+        // update is active (a partial bundle without HTML) starts its trial too.
+        let asset = self.embedded.get(key);
+        if asset.is_some() && key_str.ends_with(".html") {
+            if let Some(dir) = self.ota_dir.read().ok().and_then(|g| g.clone()) {
+                self.record_trial_started(&dir);
+            }
+        }
+        asset
     }
 
     fn iter(&self) -> Box<AssetsIter<'_>> {
@@ -472,6 +470,38 @@ mod tests {
             !crate::updater::read_meta(dir.path()).unwrap().trial_started,
             "scripts alone (e.g. lazy chunks of the old page) don't start a trial"
         );
+        assets.get(&asset_key("index.html")).unwrap();
+        assert!(crate::updater::read_meta(dir.path()).unwrap().trial_started);
+    }
+
+    #[test]
+    fn test_page_from_embedded_assets_starts_the_trial_of_a_partial_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("app.js"), b"js").unwrap(); // no index.html
+        write_unstarted_meta(dir.path());
+
+        let handle: AssetDirHandle = Arc::new(RwLock::new(Some(dir.path().to_path_buf())));
+        let assets = make_assets(handle, vec![("/index.html", b"embedded-page")]);
+        assert_eq!(
+            assets.get(&asset_key("/index.html")).unwrap().as_ref(),
+            b"embedded-page"
+        );
+        assert!(crate::updater::read_meta(dir.path()).unwrap().trial_started);
+    }
+
+    #[test]
+    fn test_recreated_bundle_dir_starts_a_new_trial() {
+        // The same seq dir can be deleted (rollback) and downloaded again.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("index.html"), b"<html>").unwrap();
+        let handle: AssetDirHandle = Arc::new(RwLock::new(Some(dir.path().to_path_buf())));
+        let assets = make_assets(handle, vec![]);
+
+        write_unstarted_meta(dir.path());
+        assets.get(&asset_key("index.html")).unwrap();
+        assert!(crate::updater::read_meta(dir.path()).unwrap().trial_started);
+
+        write_unstarted_meta(dir.path()); // re-downloaded
         assets.get(&asset_key("index.html")).unwrap();
         assert!(crate::updater::read_meta(dir.path()).unwrap().trial_started);
     }

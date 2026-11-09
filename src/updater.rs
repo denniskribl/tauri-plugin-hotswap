@@ -372,6 +372,27 @@ async fn download_once<R: Runtime>(
 }
 
 /// Write metadata to a version directory with restrictive file permissions.
+/// Serializes read-modify-write cycles on `hotswap-meta.json` (startup checks,
+/// the trial marker in the asset handler, `notifyReady()` from any window), so
+/// one update can't overwrite another's.
+static META_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Read a bundle's metadata, let `f` change it, and write it back when `f`
+/// returns `true`, all under [`META_LOCK`]. `Ok(None)` if it can't be read.
+pub(crate) fn update_meta(
+    version_dir: &Path,
+    f: impl FnOnce(&mut HotswapMeta) -> bool,
+) -> Result<Option<HotswapMeta>> {
+    let _guard = META_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(mut meta) = read_meta(version_dir) else {
+        return Ok(None);
+    };
+    if f(&mut meta) {
+        write_meta_file(version_dir, &meta)?;
+    }
+    Ok(Some(meta))
+}
+
 /// Write `hotswap-meta.json` atomically (temp file + rename), so a crash
 /// mid-write can't leave truncated metadata behind.
 pub(crate) fn write_meta_file(version_dir: &Path, meta: &HotswapMeta) -> Result<()> {
@@ -616,7 +637,7 @@ pub(crate) fn check_compatibility(
     rollback_policy: &dyn crate::policy::RollbackPolicy,
 ) -> Option<PathBuf> {
     let version_dir = resolve_current_dir(base_dir)?;
-    let mut meta = match read_meta(&version_dir) {
+    let meta = match read_meta(&version_dir) {
         Some(m) => m,
         None => {
             log::warn!(
@@ -687,11 +708,23 @@ pub(crate) fn check_compatibility(
 
     if !meta.confirmed && !meta.trial_started {
         // Activated but never loaded yet (e.g. activateUpdate() without a
-        // reload): this launch is its first trial, not a failed one.
+        // reload): this launch is its first trial, not a failed one. Record
+        // that now, so the next unconfirmed launch is judged whatever this
+        // launch serves (partial bundles may serve no page from the bundle).
         log::info!(
-            "[hotswap] v{} activated but not loaded yet, starting its first trial.",
+            "[hotswap] v{} activated but not loaded yet, this launch is its first trial.",
             meta.version
         );
+        if let Err(e) = update_meta(&version_dir, |m| {
+            m.trial_started = true;
+            true
+        }) {
+            log::error!(
+                "[hotswap] Failed to record trial start for {}: {}",
+                version_dir.display(),
+                e
+            );
+        }
     } else if !meta.confirmed {
         use crate::policy::ConfirmationDecision;
         match confirmation_policy.on_startup_unconfirmed(&meta) {
@@ -701,8 +734,10 @@ pub(crate) fn check_compatibility(
                     meta.version,
                     meta.unconfirmed_launch_count + 1
                 );
-                meta.unconfirmed_launch_count += 1;
-                if let Err(e) = write_meta_file(&version_dir, &meta) {
+                if let Err(e) = update_meta(&version_dir, |m| {
+                    m.unconfirmed_launch_count += 1;
+                    true
+                }) {
                     log::error!(
                         "[hotswap] Failed to persist unconfirmed launch count for {}: {}",
                         version_dir.display(),
@@ -1662,6 +1697,66 @@ mod tests {
 
         assert_eq!(startup(tmp.path(), "1.0.0"), Some(seq2.clone()));
         assert_eq!(read_meta(&seq2).unwrap().unconfirmed_launch_count, 0);
+        assert!(
+            read_meta(&seq2).unwrap().trial_started,
+            "this launch was its trial"
+        );
+        // Still unconfirmed on the following launch: rolled back as before.
+        assert_eq!(startup(tmp.path(), "1.0.0"), Some(tmp.path().join("seq-1")));
+    }
+
+    #[test]
+    fn test_partial_bundle_without_html_is_still_rolled_back() {
+        // Regression guard: a JS/CSS-only bundle never serves a page itself,
+        // so the trial must not depend on serving HTML from the bundle.
+        let tmp = TempDir::new().unwrap();
+        create_version(&tmp.path().join("seq-1"), "v1", 1, "1.0.0", true);
+        let seq2 = tmp.path().join("seq-2");
+        create_new_version(&seq2, 2, "1.0.0", "1.0.0", false);
+        fs::remove_file(seq2.join("index.html")).unwrap();
+        fs::write(seq2.join("app.js"), "broken()").unwrap();
+        set_current(tmp.path(), "seq-2");
+
+        assert_eq!(
+            startup(tmp.path(), "1.0.0"),
+            Some(seq2.clone()),
+            "first launch = trial"
+        );
+        assert_eq!(
+            startup(tmp.path(), "1.0.0"),
+            Some(tmp.path().join("seq-1")),
+            "then rollback"
+        );
+    }
+
+    #[test]
+    fn test_concurrent_meta_updates_are_not_lost() {
+        // notifyReady() and the trial marker can run at the same time from
+        // different threads; neither change may overwrite the other.
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("seq-1");
+        for _ in 0..200 {
+            create_new_version(&dir, 1, "1.0.0", "1.0.0", false);
+            let (a, b) = (dir.clone(), dir.clone());
+            let confirm = std::thread::spawn(move || {
+                update_meta(&a, |m| {
+                    m.confirmed = true;
+                    true
+                })
+                .unwrap()
+            });
+            let trial = std::thread::spawn(move || {
+                update_meta(&b, |m| {
+                    m.trial_started = true;
+                    true
+                })
+                .unwrap()
+            });
+            confirm.join().unwrap();
+            trial.join().unwrap();
+            let meta = read_meta(&dir).unwrap();
+            assert!(meta.confirmed && meta.trial_started, "an update was lost");
+        }
     }
 
     #[test]
