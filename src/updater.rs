@@ -457,7 +457,11 @@ fn extract_zip(bytes: &[u8], dest: &Path) -> Result<()> {
             .by_index(i)
             .map_err(|e| Error::Extraction(e.to_string()))?;
 
-        let entry_path = PathBuf::from(file.name());
+        let entry_path = PathBuf::from(
+            file.name()
+                .map_err(|e| Error::Extraction(e.to_string()))?
+                .as_ref(),
+        );
         let target = validate_entry_path(&entry_path, dest)?;
 
         if file.is_dir() {
@@ -1434,5 +1438,121 @@ mod tests {
         assert!(!tmp.path().join("seq-3").exists());
         assert!(!tmp.path().join("seq-2").exists());
         assert!(!tmp.path().join("seq-1").exists());
+    }
+
+    // ── Archive extraction ────────────────────────────────────
+
+    /// Builds a .tar.gz from (raw entry name, entry type, data/link target).
+    /// Names are written into the header directly so unsafe paths can be tested.
+    fn tar_gz(entries: &[(&str, tar::EntryType, &[u8])]) -> Vec<u8> {
+        let enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        let mut builder = tar::Builder::new(enc);
+        for (name, kind, data) in entries {
+            let mut header = tar::Header::new_gnu();
+            let raw = &mut header.as_old_mut().name;
+            raw[..name.len()].copy_from_slice(name.as_bytes());
+            header.set_entry_type(*kind);
+            header.set_mode(0o644);
+            if *kind == tar::EntryType::Symlink {
+                header
+                    .set_link_name(std::str::from_utf8(data).unwrap())
+                    .unwrap();
+                header.set_size(0);
+                header.set_cksum();
+                builder.append(&header, std::io::empty()).unwrap();
+            } else {
+                header.set_size(data.len() as u64);
+                header.set_cksum();
+                builder.append(&header, *data).unwrap();
+            }
+        }
+        builder.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[test]
+    fn test_extract_tar_gz_rejects_traversal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("out");
+        std::fs::create_dir(&dest).unwrap();
+        let bytes = tar_gz(&[("../escape.txt", tar::EntryType::Regular, b"x")]);
+        assert!(extract_tar_gz(&bytes, &dest).is_err());
+        assert!(!tmp.path().join("escape.txt").exists());
+    }
+
+    #[test]
+    fn test_extract_tar_gz_does_not_create_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bytes = tar_gz(&[("link", tar::EntryType::Symlink, b"/etc/passwd")]);
+        extract_tar_gz(&bytes, tmp.path()).unwrap();
+        assert!(std::fs::symlink_metadata(tmp.path().join("link")).is_err());
+    }
+
+    #[cfg(feature = "zip")]
+    fn zip_bytes(build: impl FnOnce(&mut zip::ZipWriter<std::io::Cursor<Vec<u8>>>)) -> Vec<u8> {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        build(&mut writer);
+        writer.finish().unwrap().into_inner()
+    }
+
+    #[cfg(feature = "zip")]
+    fn zip_file(w: &mut zip::ZipWriter<std::io::Cursor<Vec<u8>>>, name: &str, data: &[u8]) {
+        use std::io::Write;
+        w.start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        w.write_all(data).unwrap();
+    }
+
+    #[cfg(feature = "zip")]
+    #[test]
+    fn test_extract_zip_writes_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bytes = zip_bytes(|w| {
+            w.add_directory("assets/", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip_file(w, "index.html", b"<html>");
+            zip_file(w, "assets/app.js", b"console.log(1)");
+        });
+        extract_zip(&bytes, tmp.path()).unwrap();
+        assert_eq!(
+            std::fs::read(tmp.path().join("index.html")).unwrap(),
+            b"<html>"
+        );
+        assert_eq!(
+            std::fs::read(tmp.path().join("assets/app.js")).unwrap(),
+            b"console.log(1)"
+        );
+    }
+
+    #[cfg(feature = "zip")]
+    #[test]
+    fn test_extract_zip_rejects_traversal_and_absolute() {
+        for name in ["../escape.txt", "a/../../escape.txt", "/abs.txt"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let dest = tmp.path().join("out");
+            std::fs::create_dir(&dest).unwrap();
+            let bytes = zip_bytes(|w| zip_file(w, name, b"x"));
+            assert!(
+                extract_zip(&bytes, &dest).is_err(),
+                "{name} must be rejected"
+            );
+            assert!(!tmp.path().join("escape.txt").exists());
+        }
+    }
+
+    #[cfg(feature = "zip")]
+    #[test]
+    fn test_extract_zip_does_not_create_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bytes = zip_bytes(|w| {
+            w.add_symlink(
+                "link",
+                "/etc/passwd",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        });
+        extract_zip(&bytes, tmp.path()).unwrap();
+        let meta = std::fs::symlink_metadata(tmp.path().join("link")).unwrap();
+        assert!(!meta.file_type().is_symlink());
     }
 }

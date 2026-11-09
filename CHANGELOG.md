@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5] — 2026-11-09
+
+### Fixed
+
+- **Android package name detection** — the hotswap directory is now derived from the running process's real package name (`/proc/self/cmdline`), so builds with an `applicationIdSuffix` (e.g. `.dev`) use the correct sandbox path ([#12](https://github.com/denniskribl/tauri-plugin-hotswap/pull/12)). Thanks @msvargas! Secondary-process suffixes (`:service`) are stripped, and the configured identifier remains the fallback when no matching sandbox directory exists (e.g. custom `android:process` names).
+- **Android secondary users / work profiles** — the hotswap directory now lives under `/data/user/<n>/<pkg>` for non-primary users (derived from the process uid), where `/data/data` points at another user's storage and OTA updates previously failed. Primary-user paths are unchanged
+- **Guest JS build with TypeScript 6** — set `ignoreDeprecations` so the tsup DTS build no longer fails on the deprecated `baseUrl` option
+
+### Security
+
+- **`zip` 9** — the optional `zip` feature now uses `zip` 9, which includes parsing hardening (decoder overflow, ZIP64 size and oversized-entry fixes) and clears RUSTSEC-2026-0367/0368/0369/0429 for downstream audits. The plugin's own extractor already validated entry paths, never created symlinks or applied archive permissions, and only extracts bundles after signature verification. The `zip` feature requires Rust 1.88 (unchanged since `zip` 7.4).
+
+### Changed
+
+- **Extraction tests** — tar.gz and zip extraction are now covered for normal bundles, path traversal, absolute paths and symlink entries
+- **Development lockfile refresh** — this repo's `Cargo.lock` now resolves `rustls`, `h2`, `tokio`, `zstd` and `quick-xml` (via `tauri` 2.11) to versions without known advisories; this affects CI/tests only, apps resolve their own versions
+- **Dependency updates** — `serde_json`, `log`, `tokio`, `tar`, `tauri-plugin` (rust-deps group), `typescript` 6 and `@tauri-apps/api` (guest-js dev deps)
+
 ## [0.0.4] — 2026-04-09
 
 ### Added
@@ -135,7 +153,8 @@ Initial release. Open-source OTA frontend updates for Tauri v2.
 - `configure()`, `getConfig()`
 - `onDownloadProgress()`, `onLifecycle()`
 
-[Unreleased]: https://github.com/denniskribl/tauri-plugin-hotswap/compare/v0.0.4...HEAD
+[Unreleased]: https://github.com/denniskribl/tauri-plugin-hotswap/compare/v0.0.5...HEAD
+[0.0.5]: https://github.com/denniskribl/tauri-plugin-hotswap/compare/v0.0.4...v0.0.5
 [0.0.4]: https://github.com/denniskribl/tauri-plugin-hotswap/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/denniskribl/tauri-plugin-hotswap/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/denniskribl/tauri-plugin-hotswap/compare/v0.0.1...v0.0.2
