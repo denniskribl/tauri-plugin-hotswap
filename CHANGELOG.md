@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Android package name detection** — the hotswap directory is now derived from the running process's real package name (`/proc/self/cmdline`), so builds with an `applicationIdSuffix` (e.g. `.dev`) use the correct sandbox path ([#12](https://github.com/denniskribl/tauri-plugin-hotswap/pull/12)). Thanks @msvargas! Secondary-process suffixes (`:service`) are stripped, and the configured identifier remains the fallback when no matching sandbox directory exists (e.g. custom `android:process` names).
+- **Android identifiers with hyphens** — the fallback package name now replaces `-` with `_` like Tauri's Android build does, so identifiers such as `com.example.my-app` resolve to the real `com.example.my_app` sandbox
 - **Android secondary users / work profiles** — the hotswap directory now lives under `/data/user/<n>/<pkg>` for non-primary users (derived from the process uid), where `/data/data` points at another user's storage and OTA updates previously failed. Primary-user paths are unchanged
 - **Guest JS build with TypeScript 6** — set `ignoreDeprecations` so the tsup DTS build no longer fails on the deprecated `baseUrl` option
 

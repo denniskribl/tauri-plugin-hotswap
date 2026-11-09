@@ -579,7 +579,7 @@ fn resolve_base_dir(app_id: &str) -> PathBuf {
             .ok()
             .and_then(|s| package_from_cmdline(&s))
             .filter(|pkg| data.join(pkg).is_dir())
-            .unwrap_or_else(|| app_id.to_string());
+            .unwrap_or_else(|| android_package_from_identifier(app_id));
         data.join(pkg).join("files/hotswap")
     }
 }
@@ -610,6 +610,13 @@ fn android_user_from_status(status: &str) -> Option<u32> {
     Some(uid / 100_000)
 }
 
+/// Android package name for a Tauri identifier: package names cannot contain
+/// `-`, so Tauri's Android build replaces them with `_`.
+#[cfg(any(target_os = "android", test))]
+fn android_package_from_identifier(identifier: &str) -> String {
+    identifier.replace('-', "_")
+}
+
 /// Extracts the Android package name from `/proc/self/cmdline` contents.
 ///
 /// The first NUL-separated entry is the process name, which for secondary
@@ -624,6 +631,18 @@ fn package_from_cmdline(cmdline: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn android_package_replaces_hyphens() {
+        assert_eq!(
+            android_package_from_identifier("com.example.my-app"),
+            "com.example.my_app"
+        );
+        assert_eq!(
+            android_package_from_identifier("com.example.app"),
+            "com.example.app"
+        );
+    }
 
     #[test]
     fn android_user_and_data_root() {
