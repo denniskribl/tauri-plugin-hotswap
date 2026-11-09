@@ -133,6 +133,8 @@ pub(crate) async fn check_update<R: Runtime>(
 
 /// Options for the download operation, bundled to avoid excessive arguments.
 pub(crate) struct DownloadOptions<'a> {
+    /// The running app (binary) version, recorded in the bundle metadata.
+    pub binary_version: &'a str,
     pub pubkey: &'a str,
     pub base_dir: &'a Path,
     pub max_bundle_size: u64,
@@ -246,6 +248,8 @@ pub(crate) async fn download_and_extract<R: Runtime>(
             min_binary_version: manifest.min_binary_version.clone(),
             confirmed: false,
             unconfirmed_launch_count: 0,
+            installed_with_binary: Some(opts.binary_version.to_string()),
+            trial_started: false,
         },
     )?;
 
@@ -368,19 +372,44 @@ async fn download_once<R: Runtime>(
 }
 
 /// Write metadata to a version directory with restrictive file permissions.
-fn write_meta_file(version_dir: &Path, meta: &HotswapMeta) -> Result<()> {
+/// Serializes read-modify-write cycles on `hotswap-meta.json` (startup checks,
+/// the trial marker in the asset handler, `notifyReady()` from any window), so
+/// one update can't overwrite another's.
+static META_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Read a bundle's metadata, let `f` change it, and write it back when `f`
+/// returns `true`, all under [`META_LOCK`]. `Ok(None)` if it can't be read.
+pub(crate) fn update_meta(
+    version_dir: &Path,
+    f: impl FnOnce(&mut HotswapMeta) -> bool,
+) -> Result<Option<HotswapMeta>> {
+    let _guard = META_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(mut meta) = read_meta(version_dir) else {
+        return Ok(None);
+    };
+    if f(&mut meta) {
+        write_meta_file(version_dir, &meta)?;
+    }
+    Ok(Some(meta))
+}
+
+/// Write `hotswap-meta.json` atomically (temp file + rename), so a crash
+/// mid-write can't leave truncated metadata behind.
+pub(crate) fn write_meta_file(version_dir: &Path, meta: &HotswapMeta) -> Result<()> {
     let meta_path = version_dir.join("hotswap-meta.json");
+    let tmp_path = version_dir.join("hotswap-meta.json.tmp");
     let meta_json =
         serde_json::to_string_pretty(meta).map_err(|e| Error::Serialization(e.to_string()))?;
 
-    std::fs::write(&meta_path, &meta_json)?;
+    std::fs::write(&tmp_path, &meta_json)?;
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&meta_path, std::fs::Permissions::from_mode(0o600));
+        let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600));
     }
 
+    std::fs::rename(&tmp_path, &meta_path)?;
     Ok(())
 }
 
@@ -457,7 +486,11 @@ fn extract_zip(bytes: &[u8], dest: &Path) -> Result<()> {
             .by_index(i)
             .map_err(|e| Error::Extraction(e.to_string()))?;
 
-        let entry_path = PathBuf::from(file.name());
+        let entry_path = PathBuf::from(
+            file.name()
+                .map_err(|e| Error::Extraction(e.to_string()))?
+                .as_ref(),
+        );
         let target = validate_entry_path(&entry_path, dest)?;
 
         if file.is_dir() {
@@ -537,7 +570,7 @@ fn sorted_version_dirs(base_dir: &Path) -> Vec<(u64, std::fs::DirEntry)> {
         })
         .collect();
 
-    versions.sort_by(|a, b| b.0.cmp(&a.0));
+    versions.sort_by_key(|a| std::cmp::Reverse(a.0));
     versions
 }
 
@@ -604,7 +637,7 @@ pub(crate) fn check_compatibility(
     rollback_policy: &dyn crate::policy::RollbackPolicy,
 ) -> Option<PathBuf> {
     let version_dir = resolve_current_dir(base_dir)?;
-    let mut meta = match read_meta(&version_dir) {
+    let meta = match read_meta(&version_dir) {
         Some(m) => m,
         None => {
             log::warn!(
@@ -649,7 +682,11 @@ pub(crate) fn check_compatibility(
         return None;
     }
 
-    if cache_policy.should_discard(&current, &meta, None) {
+    let previous_binary = meta
+        .installed_with_binary
+        .as_deref()
+        .and_then(|v| Version::parse(v).ok());
+    if cache_policy.should_discard(&current, &meta, previous_binary.as_ref()) {
         log::info!(
             "[hotswap] Binary cache policy discards cached v{} (binary={}, min={}).",
             meta.version,
@@ -669,7 +706,26 @@ pub(crate) fn check_compatibility(
         return None;
     }
 
-    if !meta.confirmed {
+    if !meta.confirmed && !meta.trial_started {
+        // Activated but never loaded yet (e.g. activateUpdate() without a
+        // reload): this launch is its first trial, not a failed one. Record
+        // that now, so the next unconfirmed launch is judged whatever this
+        // launch serves (partial bundles may serve no page from the bundle).
+        log::info!(
+            "[hotswap] v{} activated but not loaded yet, this launch is its first trial.",
+            meta.version
+        );
+        if let Err(e) = update_meta(&version_dir, |m| {
+            m.trial_started = true;
+            true
+        }) {
+            log::error!(
+                "[hotswap] Failed to record trial start for {}: {}",
+                version_dir.display(),
+                e
+            );
+        }
+    } else if !meta.confirmed {
         use crate::policy::ConfirmationDecision;
         match confirmation_policy.on_startup_unconfirmed(&meta) {
             ConfirmationDecision::KeepForNow => {
@@ -678,8 +734,10 @@ pub(crate) fn check_compatibility(
                     meta.version,
                     meta.unconfirmed_launch_count + 1
                 );
-                meta.unconfirmed_launch_count += 1;
-                if let Err(e) = write_meta_file(&version_dir, &meta) {
+                if let Err(e) = update_meta(&version_dir, |m| {
+                    m.unconfirmed_launch_count += 1;
+                    true
+                }) {
                     log::error!(
                         "[hotswap] Failed to persist unconfirmed launch count for {}: {}",
                         version_dir.display(),
@@ -864,6 +922,8 @@ mod tests {
                 min_binary_version: min_bin.to_string(),
                 confirmed,
                 unconfirmed_launch_count: 0,
+                installed_with_binary: None,
+                trial_started: true,
             },
         )
         .unwrap();
@@ -959,6 +1019,8 @@ mod tests {
                 min_binary_version: "1.0.0".into(),
                 confirmed: false,
                 unconfirmed_launch_count: 0,
+                installed_with_binary: None,
+                trial_started: true,
             },
         )
         .unwrap();
@@ -1434,5 +1496,301 @@ mod tests {
         assert!(!tmp.path().join("seq-3").exists());
         assert!(!tmp.path().join("seq-2").exists());
         assert!(!tmp.path().join("seq-1").exists());
+    }
+
+    // ── Archive extraction ────────────────────────────────────
+
+    /// Builds a .tar.gz from (raw entry name, entry type, data/link target).
+    /// Names are written into the header directly so unsafe paths can be tested.
+    fn tar_gz(entries: &[(&str, tar::EntryType, &[u8])]) -> Vec<u8> {
+        let enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        let mut builder = tar::Builder::new(enc);
+        for (name, kind, data) in entries {
+            let mut header = tar::Header::new_gnu();
+            let raw = &mut header.as_old_mut().name;
+            raw[..name.len()].copy_from_slice(name.as_bytes());
+            header.set_entry_type(*kind);
+            header.set_mode(0o644);
+            if *kind == tar::EntryType::Symlink {
+                header
+                    .set_link_name(std::str::from_utf8(data).unwrap())
+                    .unwrap();
+                header.set_size(0);
+                header.set_cksum();
+                builder.append(&header, std::io::empty()).unwrap();
+            } else {
+                header.set_size(data.len() as u64);
+                header.set_cksum();
+                builder.append(&header, *data).unwrap();
+            }
+        }
+        builder.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[test]
+    fn test_extract_tar_gz_rejects_traversal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("out");
+        std::fs::create_dir(&dest).unwrap();
+        let bytes = tar_gz(&[("../escape.txt", tar::EntryType::Regular, b"x")]);
+        assert!(extract_tar_gz(&bytes, &dest).is_err());
+        assert!(!tmp.path().join("escape.txt").exists());
+    }
+
+    #[test]
+    fn test_extract_tar_gz_does_not_create_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bytes = tar_gz(&[("link", tar::EntryType::Symlink, b"/etc/passwd")]);
+        extract_tar_gz(&bytes, tmp.path()).unwrap();
+        assert!(std::fs::symlink_metadata(tmp.path().join("link")).is_err());
+    }
+
+    #[cfg(feature = "zip")]
+    fn zip_bytes(build: impl FnOnce(&mut zip::ZipWriter<std::io::Cursor<Vec<u8>>>)) -> Vec<u8> {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        build(&mut writer);
+        writer.finish().unwrap().into_inner()
+    }
+
+    #[cfg(feature = "zip")]
+    fn zip_file(w: &mut zip::ZipWriter<std::io::Cursor<Vec<u8>>>, name: &str, data: &[u8]) {
+        use std::io::Write;
+        w.start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        w.write_all(data).unwrap();
+    }
+
+    #[cfg(feature = "zip")]
+    #[test]
+    fn test_extract_zip_writes_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bytes = zip_bytes(|w| {
+            w.add_directory("assets/", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip_file(w, "index.html", b"<html>");
+            zip_file(w, "assets/app.js", b"console.log(1)");
+        });
+        extract_zip(&bytes, tmp.path()).unwrap();
+        assert_eq!(
+            std::fs::read(tmp.path().join("index.html")).unwrap(),
+            b"<html>"
+        );
+        assert_eq!(
+            std::fs::read(tmp.path().join("assets/app.js")).unwrap(),
+            b"console.log(1)"
+        );
+    }
+
+    #[cfg(feature = "zip")]
+    #[test]
+    fn test_extract_zip_rejects_traversal_and_absolute() {
+        for name in ["../escape.txt", "a/../../escape.txt", "/abs.txt"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let dest = tmp.path().join("out");
+            std::fs::create_dir(&dest).unwrap();
+            let bytes = zip_bytes(|w| zip_file(w, name, b"x"));
+            assert!(
+                extract_zip(&bytes, &dest).is_err(),
+                "{name} must be rejected"
+            );
+            assert!(!tmp.path().join("escape.txt").exists());
+        }
+    }
+
+    #[cfg(feature = "zip")]
+    #[test]
+    fn test_extract_zip_does_not_create_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bytes = zip_bytes(|w| {
+            w.add_symlink(
+                "link",
+                "/etc/passwd",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        });
+        extract_zip(&bytes, tmp.path()).unwrap();
+        let meta = std::fs::symlink_metadata(tmp.path().join("link")).unwrap();
+        assert!(!meta.file_type().is_symlink());
+    }
+
+    // ── 0.0.5: installing binary + first trial ─────────────────────────
+
+    fn create_new_version(
+        dir: &Path,
+        sequence: u64,
+        min_bin: &str,
+        installed_with: &str,
+        trial_started: bool,
+    ) {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join("index.html"), "<html></html>").unwrap();
+        write_meta_file(
+            dir,
+            &HotswapMeta {
+                version: format!("v{sequence}"),
+                sequence,
+                min_binary_version: min_bin.to_string(),
+                confirmed: false,
+                unconfirmed_launch_count: 0,
+                installed_with_binary: Some(installed_with.to_string()),
+                trial_started,
+            },
+        )
+        .unwrap();
+    }
+
+    fn startup(base: &Path, binary: &str) -> Option<PathBuf> {
+        check_compatibility(
+            base,
+            binary,
+            &BinaryCachePolicyKind::DiscardOnUpgrade,
+            &ConfirmationPolicyKind::SingleLaunch,
+            &RollbackPolicyKind::LatestConfirmed,
+        )
+    }
+
+    #[test]
+    fn test_bundle_with_lower_min_survives_restarts_on_same_binary() {
+        // Regression: DiscardOnUpgrade discarded every bundle whose
+        // min_binary_version was below the app version on each launch.
+        let tmp = TempDir::new().unwrap();
+        let seq1 = tmp.path().join("seq-1");
+        create_new_version(&seq1, 1, "1.0.0", "1.2.0", true);
+        let mut meta = read_meta(&seq1).unwrap();
+        meta.confirmed = true;
+        write_meta_file(&seq1, &meta).unwrap();
+        set_current(tmp.path(), "seq-1");
+
+        for _ in 0..3 {
+            assert_eq!(startup(tmp.path(), "1.2.0"), Some(seq1.clone()));
+        }
+        assert!(seq1.exists());
+    }
+
+    #[test]
+    fn test_bundle_is_discarded_after_app_upgrade() {
+        let tmp = TempDir::new().unwrap();
+        let seq1 = tmp.path().join("seq-1");
+        create_new_version(&seq1, 1, "1.0.0", "1.2.0", true);
+        let mut meta = read_meta(&seq1).unwrap();
+        meta.confirmed = true;
+        write_meta_file(&seq1, &meta).unwrap();
+        set_current(tmp.path(), "seq-1");
+
+        assert_eq!(
+            startup(tmp.path(), "1.3.0"),
+            None,
+            "new app release's embedded assets win"
+        );
+        assert!(!seq1.exists());
+    }
+
+    #[test]
+    fn test_activated_bundle_gets_its_first_launch() {
+        // activateUpdate() without a reload: the next launch is the first trial.
+        let tmp = TempDir::new().unwrap();
+        create_version(&tmp.path().join("seq-1"), "v1", 1, "1.0.0", true);
+        let seq2 = tmp.path().join("seq-2");
+        create_new_version(&seq2, 2, "1.0.0", "1.0.0", false);
+        set_current(tmp.path(), "seq-2");
+
+        assert_eq!(startup(tmp.path(), "1.0.0"), Some(seq2.clone()));
+        assert_eq!(read_meta(&seq2).unwrap().unconfirmed_launch_count, 0);
+        assert!(
+            read_meta(&seq2).unwrap().trial_started,
+            "this launch was its trial"
+        );
+        // Still unconfirmed on the following launch: rolled back as before.
+        assert_eq!(startup(tmp.path(), "1.0.0"), Some(tmp.path().join("seq-1")));
+    }
+
+    #[test]
+    fn test_partial_bundle_without_html_is_still_rolled_back() {
+        // Regression guard: a JS/CSS-only bundle never serves a page itself,
+        // so the trial must not depend on serving HTML from the bundle.
+        let tmp = TempDir::new().unwrap();
+        create_version(&tmp.path().join("seq-1"), "v1", 1, "1.0.0", true);
+        let seq2 = tmp.path().join("seq-2");
+        create_new_version(&seq2, 2, "1.0.0", "1.0.0", false);
+        fs::remove_file(seq2.join("index.html")).unwrap();
+        fs::write(seq2.join("app.js"), "broken()").unwrap();
+        set_current(tmp.path(), "seq-2");
+
+        assert_eq!(
+            startup(tmp.path(), "1.0.0"),
+            Some(seq2.clone()),
+            "first launch = trial"
+        );
+        assert_eq!(
+            startup(tmp.path(), "1.0.0"),
+            Some(tmp.path().join("seq-1")),
+            "then rollback"
+        );
+    }
+
+    #[test]
+    fn test_concurrent_meta_updates_are_not_lost() {
+        // notifyReady() and the trial marker can run at the same time from
+        // different threads; neither change may overwrite the other.
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("seq-1");
+        for _ in 0..200 {
+            create_new_version(&dir, 1, "1.0.0", "1.0.0", false);
+            let (a, b) = (dir.clone(), dir.clone());
+            let confirm = std::thread::spawn(move || {
+                update_meta(&a, |m| {
+                    m.confirmed = true;
+                    true
+                })
+                .unwrap()
+            });
+            let trial = std::thread::spawn(move || {
+                update_meta(&b, |m| {
+                    m.trial_started = true;
+                    true
+                })
+                .unwrap()
+            });
+            confirm.join().unwrap();
+            trial.join().unwrap();
+            let meta = read_meta(&dir).unwrap();
+            assert!(meta.confirmed && meta.trial_started, "an update was lost");
+        }
+    }
+
+    #[test]
+    fn test_loaded_but_unconfirmed_bundle_still_rolls_back() {
+        // Once a page was loaded from it (trial started) and notifyReady never
+        // came, SingleLaunch rolls back on the next start as before.
+        let tmp = TempDir::new().unwrap();
+        create_version(&tmp.path().join("seq-1"), "v1", 1, "1.0.0", true);
+        create_new_version(&tmp.path().join("seq-2"), 2, "1.0.0", "1.0.0", true);
+        set_current(tmp.path(), "seq-2");
+
+        assert_eq!(startup(tmp.path(), "1.0.0"), Some(tmp.path().join("seq-1")));
+    }
+
+    #[test]
+    fn test_legacy_meta_keeps_previous_behaviour() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("seq-1");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("hotswap-meta.json"),
+            r#"{"version":"v1","sequence":1,"min_binary_version":"1.0.0","confirmed":false}"#,
+        )
+        .unwrap();
+        let meta = read_meta(&dir).unwrap();
+        assert!(meta.trial_started, "pre-0.0.5 bundles are judged as before");
+        assert_eq!(meta.installed_with_binary, None);
+    }
+
+    #[test]
+    fn test_write_meta_file_leaves_no_temp_file() {
+        let tmp = TempDir::new().unwrap();
+        create_version(tmp.path(), "v1", 1, "1.0.0", true);
+        assert!(tmp.path().join("hotswap-meta.json").exists());
+        assert!(!tmp.path().join("hotswap-meta.json.tmp").exists());
     }
 }

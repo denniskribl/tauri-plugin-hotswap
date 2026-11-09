@@ -78,7 +78,7 @@ let (plugin, context) = HotswapBuilder::new("<YOUR_MINISIGN_PUBKEY>")
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `endpoint` | `string` | **required** | Update check URL. `{{current_sequence}}` is replaced with the current sequence number at runtime. |
+| `endpoint` | `string` | **required** | Update check URL. `{{current_sequence}}` is replaced with the current sequence number at runtime, `{{channel}}` with the active channel (see [Server contract](server-contract.md)). |
 | `pubkey` | `string` | **required** | Minisign public key (`RW...` base64 line from your `.pub` file). |
 | `channel` | `string` | — | Update channel (e.g. `"production"`, `"staging"`, `"beta"`). Sent as a `&channel=` query param. Can be changed at runtime via `configure()`. |
 | `headers` | `object` | — | Custom HTTP headers sent on **every** check and download request. Common use: `{"Authorization": "Bearer <token>"}`. |
@@ -86,7 +86,7 @@ let (plugin, context) = HotswapBuilder::new("<YOUR_MINISIGN_PUBKEY>")
 | `max_retries` | `number` | `3` | Number of download retry attempts. Uses exponential backoff: 1s, 2s, 4s, 8s, capped at 16s. |
 | `require_https` | `boolean` | `true` | Reject non-HTTPS URLs for both check and download requests. Set to `false` only for local development with `http://localhost`. |
 | `binary_cache_policy` | `string` | `discard_on_upgrade` | Controls cache retention on binary upgrades. `keep_compatible` keeps the cache if the binary still satisfies `min_binary_version`. `discard_on_upgrade` discards when the binary is newer (default). `never_discard` never discards from policy. |
-| `confirmation_policy` | `string\|object` | `single_launch` | Controls what happens on startup if `notifyReady()` wasn't called. `single_launch` rolls back immediately (default). `{ "grace_period": { "max_unconfirmed_launches": 3 } }` allows N unconfirmed launches before rollback. |
+| `confirmation_policy` | `string\|object` | `single_launch` | Controls what happens on startup if `notifyReady()` wasn't called. `single_launch` rolls back on the first launch after the bundle's trial run that didn't call `notifyReady()` (default). A bundle activated without a reload gets that trial on the next start. `{ "grace_period": { "max_unconfirmed_launches": 3 } }` allows N unconfirmed launches before rollback. |
 | `rollback_policy` | `string` | `latest_confirmed` | Controls rollback target. `latest_confirmed` picks the highest confirmed version. `immediate_previous_confirmed` picks the version just before current. `embedded_only` always falls back to embedded assets. |
 | `max_retained_versions` | `number` | `2` | Total versions to keep on disk (min: 2). Includes current and rollback candidate. |
 

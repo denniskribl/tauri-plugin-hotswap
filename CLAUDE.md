@@ -61,7 +61,7 @@ Exports: `checkUpdate`, `applyUpdate`, `downloadUpdate`, `activateUpdate`, `roll
 - Use existing error types from `error.rs` — no raw `String` errors
 - Prefer `pub(crate)` over `pub` for internal functions
 - All public items need doc comments
-- MSRV: Rust 1.77.2
+- MSRV: Rust 1.88 (required by tauri's dependency tree and `zip` 9)
 
 ## Workflow
 

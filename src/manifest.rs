@@ -53,6 +53,22 @@ pub struct HotswapMeta {
     /// to decide whether to grant a grace period or trigger rollback.
     #[serde(default)]
     pub unconfirmed_launch_count: u32,
+    /// App (binary) version that installed this bundle. Lets the default
+    /// [`BinaryCachePolicy`](crate::policy::BinaryCachePolicy) detect an actual
+    /// app upgrade. `None` for bundles installed before this was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_with_binary: Option<String>,
+    /// Whether a page has been loaded from this bundle since it was activated.
+    /// The confirmation policy only judges launches after the trial started,
+    /// so a bundle activated for the next launch gets its first run.
+    /// Defaults to `true` for metadata written before this field existed,
+    /// which keeps their previous behaviour.
+    #[serde(default = "default_true")]
+    pub trial_started: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Result returned to the frontend from `hotswap_check`.

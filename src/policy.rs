@@ -3,7 +3,7 @@
 //! Four traits govern how the plugin handles cached bundles at startup,
 //! on rollback, and during cleanup. Each has built-in enum implementations
 //! configurable via `tauri.conf.json`. Custom implementations can be
-//! injected via [`HotswapBuilder`](crate::HotswapBuilder) using the
+//! injected via [`HotswapBuilder`] using the
 //! `binary_cache_policy()`, `confirmation_policy()`, `rollback_policy()`,
 //! and `retention_policy()` setters, which accept any `impl Policy` type.
 //!
@@ -31,8 +31,8 @@ use std::collections::HashSet;
 pub trait BinaryCachePolicy: Send + Sync + 'static {
     /// Return `true` to discard the cached bundle and fall back to embedded assets.
     ///
-    /// `previous_binary` is `None` until a future release adds persistence
-    /// of the previous binary version.
+    /// `previous_binary` is the app version that installed the cached bundle,
+    /// or `None` for bundles installed before 0.0.5 (which didn't record it).
     fn should_discard(
         &self,
         current_binary: &Version,
@@ -56,12 +56,13 @@ pub enum BinaryCachePolicyKind {
     /// Keep the cache as long as the current binary satisfies `min_binary_version`.
     /// Recommended for most apps — opt in via `"binary_cache_policy": "keep_compatible"`.
     KeepCompatible,
-    /// Discard when `current_binary > min_binary_version`.
-    /// This is the default, preserving pre-0.0.2 semantics.
+    /// Discard when the app was upgraded since the bundle was installed
+    /// (`current_binary > previous_binary`), so a new app release's embedded
+    /// frontend wins over an older cached bundle. This is the default.
     ///
-    /// Note: this detects "binary newer than min", not actual binary *changes*
-    /// (e.g., rebuild at same version, downgrade). True change detection
-    /// would require persisting the previous binary version (deferred).
+    /// Bundles installed before 0.0.5 don't record the installing version and
+    /// fall back to `current_binary > min_binary_version`; they are discarded
+    /// and re-downloaded once, after which the version is recorded.
     #[default]
     DiscardOnUpgrade,
     /// Never discard based on binary version. Only the safety check
@@ -74,12 +75,18 @@ impl BinaryCachePolicy for BinaryCachePolicyKind {
         &self,
         current_binary: &Version,
         cached_meta: &HotswapMeta,
-        _previous_binary: Option<&Version>,
+        previous_binary: Option<&Version>,
     ) -> bool {
         match self {
             BinaryCachePolicyKind::KeepCompatible => false,
             BinaryCachePolicyKind::DiscardOnUpgrade => {
-                if let Ok(required) = Version::parse(&cached_meta.min_binary_version) {
+                if let Some(previous) = previous_binary {
+                    // The app was upgraded since this bundle was installed.
+                    current_binary > previous
+                } else if let Ok(required) = Version::parse(&cached_meta.min_binary_version) {
+                    // Bundles installed before 0.0.5 don't record the installing
+                    // version: keep the old heuristic. They are re-downloaded once
+                    // and record it from then on.
                     current_binary > &required
                 } else {
                     false
@@ -317,6 +324,8 @@ mod tests {
             min_binary_version: min_bin.into(),
             confirmed,
             unconfirmed_launch_count: 0,
+            installed_with_binary: None,
+            trial_started: true,
         }
     }
 
@@ -652,5 +661,17 @@ mod tests {
     fn retention_config_default() {
         let r = RetentionConfig::default();
         assert_eq!(r.max_retained_versions, 2);
+    }
+
+    #[test]
+    fn discard_on_upgrade_uses_installing_binary_when_known() {
+        let p = BinaryCachePolicyKind::DiscardOnUpgrade;
+        let m = meta("1.0.0", 1, true);
+        // Same app version that installed it: keep, even though min is lower.
+        assert!(!p.should_discard(&v("1.2.0"), &m, Some(&v("1.2.0"))));
+        // App upgraded since install: discard.
+        assert!(p.should_discard(&v("1.3.0"), &m, Some(&v("1.2.0"))));
+        // Unknown (legacy bundle): old heuristic.
+        assert!(p.should_discard(&v("1.2.0"), &m, None));
     }
 }

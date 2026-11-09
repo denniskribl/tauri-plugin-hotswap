@@ -565,15 +565,109 @@ fn resolve_base_dir(app_id: &str) -> PathBuf {
     }
     #[cfg(target_os = "android")]
     {
-        PathBuf::from("/data/data")
-            .join(app_id)
-            .join("files/hotswap")
+        // The runtime package name can differ from the configured identifier
+        // (e.g. `applicationIdSuffix ".dev"`), and the sandbox dir follows it.
+        // The process name only equals the package name for the default process,
+        // so require that a sandbox dir for it actually exists (a custom
+        // `android:process` name falls back to the configured identifier).
+        let data = std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|s| android_user_from_status(&s))
+            .map(android_data_root)
+            .unwrap_or_else(|| PathBuf::from("/data/data"));
+        let pkg = std::fs::read_to_string("/proc/self/cmdline")
+            .ok()
+            .and_then(|s| package_from_cmdline(&s))
+            .filter(|pkg| data.join(pkg).is_dir())
+            .unwrap_or_else(|| android_package_from_identifier(app_id));
+        data.join(pkg).join("files/hotswap")
     }
+}
+
+/// Data root for an Android user: `/data/data` for the primary user (unchanged
+/// from earlier releases), `/data/user/<n>` for secondary users and work
+/// profiles, where `/data/data` points at another user's storage.
+#[cfg(any(target_os = "android", test))]
+fn android_data_root(user: u32) -> PathBuf {
+    if user == 0 {
+        PathBuf::from("/data/data")
+    } else {
+        PathBuf::from(format!("/data/user/{user}"))
+    }
+}
+
+/// Extracts the Android user id from `/proc/self/status` contents
+/// (Android uids are `user_id * 100000 + app_id`).
+#[cfg(any(target_os = "android", test))]
+fn android_user_from_status(status: &str) -> Option<u32> {
+    let uid: u32 = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Uid:"))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()?;
+    Some(uid / 100_000)
+}
+
+/// Android package name for a Tauri identifier: package names cannot contain
+/// `-`, so Tauri's Android build replaces them with `_`.
+#[cfg(any(target_os = "android", test))]
+fn android_package_from_identifier(identifier: &str) -> String {
+    identifier.replace('-', "_")
+}
+
+/// Extracts the Android package name from `/proc/self/cmdline` contents.
+///
+/// The first NUL-separated entry is the process name, which for secondary
+/// processes carries a `:<name>` suffix (e.g. `com.example.app:service`).
+#[cfg(any(target_os = "android", test))]
+fn package_from_cmdline(cmdline: &str) -> Option<String> {
+    let process = cmdline.split('\0').next()?;
+    let pkg = process.split(':').next()?.trim();
+    (!pkg.is_empty()).then(|| pkg.to_owned())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn android_package_replaces_hyphens() {
+        assert_eq!(
+            android_package_from_identifier("com.example.my-app"),
+            "com.example.my_app"
+        );
+        assert_eq!(
+            android_package_from_identifier("com.example.app"),
+            "com.example.app"
+        );
+    }
+
+    #[test]
+    fn android_user_and_data_root() {
+        let primary = "Name:\tapp\nUid:\t10234\t10234\t10234\t10234\n";
+        let work = "Name:\tapp\nUid:\t1010234\t1010234\t1010234\t1010234\n";
+        assert_eq!(android_user_from_status(primary), Some(0));
+        assert_eq!(android_user_from_status(work), Some(10));
+        assert_eq!(android_user_from_status("Name:\tapp\n"), None);
+        assert_eq!(android_data_root(0), PathBuf::from("/data/data"));
+        assert_eq!(android_data_root(10), PathBuf::from("/data/user/10"));
+    }
+
+    #[test]
+    fn package_from_cmdline_parses_process_name() {
+        assert_eq!(
+            package_from_cmdline("com.example.app.dev\0").as_deref(),
+            Some("com.example.app.dev")
+        );
+        assert_eq!(
+            package_from_cmdline("com.example.app:service\0\0").as_deref(),
+            Some("com.example.app")
+        );
+        assert_eq!(package_from_cmdline(""), None);
+        assert_eq!(package_from_cmdline("\0"), None);
+    }
 
     /// Regression: `HotswapConfig` must deserialize from a full JSON object.
     /// This is the Option A path (config in tauri.conf.json).

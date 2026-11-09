@@ -58,11 +58,19 @@ A plain text file containing the name of the active version directory (e.g. `seq
   "version": "0.1.0-ota.3",
   "sequence": 42,
   "min_binary_version": "0.1.0",
-  "confirmed": true
+  "confirmed": true,
+  "unconfirmed_launch_count": 0,
+  "installed_with_binary": "0.1.0",
+  "trial_started": true
 }
 ```
 
 The `confirmed` field is the rollback heartbeat. Set to `false` on extraction, `true` when `notifyReady()` is called.
+
+- `trial_started` — whether the bundle has had its trial run. It is set when a page loads while the bundle is active (e.g. the reload after `applyUpdate()`), or at the first app start after activation. The confirmation policy only judges launches after that, so a bundle activated for the next launch is never rolled back before it ran.
+- `installed_with_binary` — the app version that downloaded the bundle. The default `discard_on_upgrade` policy drops the bundle only when the app was upgraded since.
+
+All changes to this file are written atomically (temp file + rename) under a lock.
 
 ---
 
