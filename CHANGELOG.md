@@ -9,8 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.0.5] — 2026-11-09
 
+### Added
+
+- **`{{channel}}` endpoint placeholder** — replaced with the active channel, for static hosting with one manifest per channel (e.g. `https://cdn.example.com/{{channel}}/latest.json`). For such URLs a 404 means "no release for this channel yet" and is treated as no update; for other URLs a 404 stays an error
+
 ### Fixed
 
+- **Bundles re-downloaded on every launch** — the default `DiscardOnUpgrade` policy discarded any bundle whose `min_binary_version` was below the app version, so it was downloaded again on each start. Bundles now record the app version that installed them and are only discarded after an actual app upgrade. Bundles installed by earlier versions are re-downloaded once more, then record it
+- **Activated bundles rolled back before their first run** — with the default `SingleLaunch` policy, a bundle activated for the next launch (`activateUpdate()` without a reload) was rolled back on that launch. The trial now starts when a page is first loaded from the bundle; only then can a missing `notifyReady()` trigger a rollback
+- **Atomic metadata writes** — `hotswap-meta.json` is written via a temp file and rename, so a crash mid-write can't corrupt it
 - **Android package name detection** — the hotswap directory is now derived from the running process's real package name (`/proc/self/cmdline`), so builds with an `applicationIdSuffix` (e.g. `.dev`) use the correct sandbox path ([#12](https://github.com/denniskribl/tauri-plugin-hotswap/pull/12)). Thanks @msvargas! Secondary-process suffixes (`:service`) are stripped, and the configured identifier remains the fallback when no matching sandbox directory exists (e.g. custom `android:process` names).
 - **Android identifiers with hyphens** — the fallback package name now replaces `-` with `_` like Tauri's Android build does, so identifiers such as `com.example.my-app` resolve to the real `com.example.my_app` sandbox
 - **Android secondary users / work profiles** — the hotswap directory now lives under `/data/user/<n>/<pkg>` for non-primary users (derived from the process uid), where `/data/data` points at another user's storage and OTA updates previously failed. Primary-user paths are unchanged

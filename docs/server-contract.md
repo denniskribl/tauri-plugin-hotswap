@@ -16,7 +16,14 @@ GET https://your-server.com/api/updates/42?binary_version=0.1.0&platform=macos&a
 
 ### URL
 
-The `endpoint` from your config, with `{{current_sequence}}` replaced by the client's current sequence number (e.g. `42`).
+The `endpoint` from your config, with these placeholders replaced:
+
+| Placeholder | Replaced with |
+|---|---|
+| `{{current_sequence}}` | The client's current sequence number (e.g. `42`) |
+| `{{channel}}` | The active channel (e.g. `beta`). A channel must be configured, and it may only contain letters, digits, `.`, `_` and `-`. |
+
+`{{channel}}` is useful for static hosting with one manifest per channel, e.g. `https://cdn.example.com/{{channel}}/latest.json`. With such a URL, a **404** response means "no release for this channel yet" and is treated as no update. Without `{{channel}}` in the URL, a 404 stays an error, so a mistyped endpoint isn't silently treated as "no update".
 
 ### Query Parameters
 

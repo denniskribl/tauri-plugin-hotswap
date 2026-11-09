@@ -78,7 +78,7 @@ let (plugin, context) = HotswapBuilder::new("<YOUR_MINISIGN_PUBKEY>")
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `endpoint` | `string` | **required** | Update check URL. `{{current_sequence}}` is replaced with the current sequence number at runtime. |
+| `endpoint` | `string` | **required** | Update check URL. `{{current_sequence}}` is replaced with the current sequence number at runtime, `{{channel}}` with the active channel (see [Server contract](server-contract.md)). |
 | `pubkey` | `string` | **required** | Minisign public key (`RW...` base64 line from your `.pub` file). |
 | `channel` | `string` | — | Update channel (e.g. `"production"`, `"staging"`, `"beta"`). Sent as a `&channel=` query param. Can be changed at runtime via `configure()`. |
 | `headers` | `object` | — | Custom HTTP headers sent on **every** check and download request. Common use: `{"Authorization": "Bearer <token>"}`. |

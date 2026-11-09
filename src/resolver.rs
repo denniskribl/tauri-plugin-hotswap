@@ -52,9 +52,17 @@ pub trait HotswapResolver: Send + Sync + 'static {
 ///
 /// Custom headers (e.g. `Authorization`) are sent on every request.
 ///
+/// The URL may also contain `{{channel}}`, replaced with the active channel
+/// (letters, digits, `.`, `_`, `-`; a channel must be configured). This lets
+/// static hosts serve one manifest per channel by path or host, e.g.
+/// `https://cdn.example.com/{{channel}}/latest.json`.
+///
 /// Expected responses:
 /// - **204 No Content** → no update available
 /// - **200** with JSON body → [`HotswapManifest`]
+/// - **404** → no update available, but only when the URL contains
+///   `{{channel}}` (a channel without a published release yet). Otherwise a
+///   404 is an error, so a mistyped endpoint is not mistaken for "no update".
 pub struct HttpResolver {
     endpoint: String,
     client: reqwest::Client,
@@ -98,9 +106,10 @@ impl HotswapResolver for HttpResolver {
         ctx: &CheckContext,
     ) -> Pin<Box<dyn Future<Output = Result<Option<HotswapManifest>>> + Send>> {
         let base = ctx.endpoint_override.as_deref().unwrap_or(&self.endpoint);
-        let raw = base.replace("{{current_sequence}}", &ctx.current_sequence.to_string());
-        let mut parsed =
-            Url::parse(&raw).map_err(|e| Error::Config(format!("invalid endpoint URL: {}", e)));
+        let per_channel_url = base.contains(CHANNEL_PLACEHOLDER);
+        let mut parsed = expand_endpoint(base, ctx).and_then(|raw| {
+            Url::parse(&raw).map_err(|e| Error::Config(format!("invalid endpoint URL: {}", e)))
+        });
         if let Ok(ref mut u) = parsed {
             u.query_pairs_mut()
                 .append_pair("binary_version", &ctx.binary_version)
@@ -138,6 +147,11 @@ impl HotswapResolver for HttpResolver {
                 return Ok(None);
             }
 
+            if response.status().as_u16() == 404 && per_channel_url {
+                log::info!("[hotswap] No manifest published for this channel yet (404)");
+                return Ok(None);
+            }
+
             if !response.status().is_success() {
                 return Err(Error::Http {
                     status: response.status().as_u16(),
@@ -153,6 +167,29 @@ impl HotswapResolver for HttpResolver {
             Ok(Some(manifest))
         })
     }
+}
+
+const CHANNEL_PLACEHOLDER: &str = "{{channel}}";
+
+/// Substitute `{{current_sequence}}` and `{{channel}}` in an endpoint template.
+fn expand_endpoint(template: &str, ctx: &CheckContext) -> Result<String> {
+    let mut url = template.replace("{{current_sequence}}", &ctx.current_sequence.to_string());
+    if url.contains(CHANNEL_PLACEHOLDER) {
+        let channel = ctx.channel.as_deref().ok_or_else(|| {
+            Error::Config("endpoint contains {{channel}} but no channel is configured".into())
+        })?;
+        let valid = !channel.is_empty()
+            && channel
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+        if !valid {
+            return Err(Error::Config(format!(
+                "channel {channel:?} can't be used in the endpoint URL (allowed: letters, digits, '.', '_', '-')"
+            )));
+        }
+        url = url.replace(CHANNEL_PLACEHOLDER, channel);
+    }
+    Ok(url)
 }
 
 /// Static file resolver that reads a manifest from a local path or URL.
@@ -497,5 +534,81 @@ mod tests {
         let result = resolver.check(&test_ctx(0)).await.unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().sequence, 99);
+    }
+
+    // ── {{channel}} + 404 ──────────────────────────────────────────────
+
+    fn ctx_with_channel(channel: Option<&str>) -> CheckContext {
+        let mut ctx = test_ctx(3);
+        ctx.channel = channel.map(str::to_string);
+        ctx
+    }
+
+    #[test]
+    fn test_expand_endpoint_channel() {
+        let ctx = ctx_with_channel(Some("beta-2"));
+        assert_eq!(
+            expand_endpoint(
+                "https://ota-{{channel}}.example.com/{{current_sequence}}.json",
+                &ctx
+            )
+            .unwrap(),
+            "https://ota-beta-2.example.com/3.json"
+        );
+        // Templates without the placeholder don't need a channel.
+        assert_eq!(
+            expand_endpoint("https://example.com/check", &ctx_with_channel(None)).unwrap(),
+            "https://example.com/check"
+        );
+    }
+
+    #[test]
+    fn test_expand_endpoint_rejects_missing_or_unsafe_channel() {
+        let tpl = "https://cdn.example.com/{{channel}}/latest.json";
+        assert!(expand_endpoint(tpl, &ctx_with_channel(None)).is_err());
+        for bad in ["", "a/../b", "x?y=1", "a b", "beta#1"] {
+            assert!(
+                expand_endpoint(tpl, &ctx_with_channel(Some(bad))).is_err(),
+                "{bad:?}"
+            );
+        }
+    }
+
+    /// One-shot HTTP server answering every request with `status`.
+    fn serve_status_once(status: &'static str) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn test_404_means_no_update_for_per_channel_urls() {
+        let base = serve_status_once("404 Not Found");
+        let resolver = HttpResolver::new(format!("{base}/{{{{channel}}}}/latest.json"));
+        let result = resolver.check(&ctx_with_channel(Some("beta"))).await;
+        assert!(matches!(result, Ok(None)), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn test_404_is_an_error_without_channel_placeholder() {
+        // A mistyped endpoint must not look like "no update available".
+        let base = serve_status_once("404 Not Found");
+        let resolver = HttpResolver::new(format!("{base}/typo/latest.json"));
+        let result = resolver.check(&ctx_with_channel(Some("beta"))).await;
+        assert!(
+            matches!(result, Err(Error::Http { status: 404, .. })),
+            "{result:?}"
+        );
     }
 }
