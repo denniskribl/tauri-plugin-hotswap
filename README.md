@@ -210,6 +210,10 @@ See the full [Security documentation](docs/security.md) for the threat model and
 
 ---
 
+## 🗺️ Roadmap
+
+1.0 is planned: all breaking changes ship together, then the API stays stable across 1.x. See the [Roadmap to 1.0](https://github.com/denniskribl/tauri-plugin-hotswap/issues/22) for what's included and how to give feedback.
+
 ## License
 
 MIT OR Apache-2.0 (same as Tauri)
