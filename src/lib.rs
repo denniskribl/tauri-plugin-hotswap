@@ -565,9 +565,12 @@ fn resolve_base_dir(app_id: &str) -> PathBuf {
     }
     #[cfg(target_os = "android")]
     {
-        PathBuf::from("/data/data")
-            .join(app_id)
-            .join("files/hotswap")
+       let pkg = std::fs::read_to_string("/proc/self/cmdline")
+            .ok()
+            .and_then(|s| s.split('\0').next().map(str::to_owned))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| app_id.to_string());
+        PathBuf::from("/data/data").join(pkg).join("files/hotswap")
     }
 }
 
