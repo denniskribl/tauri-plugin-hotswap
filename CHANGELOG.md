@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Minimum Rust version: 1.88** — `rust-version` now states what the dependency tree already required (tauri's dependencies and `zip` need 1.88; the previously declared 1.77.2 no longer built). Nothing changes for working setups
 - **Extraction tests** — tar.gz and zip extraction are now covered for normal bundles, path traversal, absolute paths and symlink entries
 - **Development lockfile refresh** — this repo's `Cargo.lock` now resolves `rustls`, `h2`, `tokio`, `zstd` and `quick-xml` (via `tauri` 2.11) to versions without known advisories; this affects CI/tests only, apps resolve their own versions
 - **Dependency updates** — `serde_json`, `log`, `tokio`, `tar`, `tauri-plugin` (rust-deps group), `typescript` 6 and `@tauri-apps/api` (guest-js dev deps)
