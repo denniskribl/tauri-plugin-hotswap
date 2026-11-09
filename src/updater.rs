@@ -541,7 +541,7 @@ fn sorted_version_dirs(base_dir: &Path) -> Vec<(u64, std::fs::DirEntry)> {
         })
         .collect();
 
-    versions.sort_by(|a, b| b.0.cmp(&a.0));
+    versions.sort_by_key(|a| std::cmp::Reverse(a.0));
     versions
 }
 
