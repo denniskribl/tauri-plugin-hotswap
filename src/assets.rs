@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use tauri::utils::assets::{AssetKey, AssetsIter, CspHash};
 use tauri::Runtime;
 
@@ -19,6 +19,9 @@ pub struct HotswapAssets<R: Runtime> {
     /// `None` → serve embedded assets only.
     /// `Some(path)` → try filesystem first, fall back to embedded.
     ota_dir: AssetDirHandle,
+    /// Bundle directory whose trial was already recorded, so the metadata is
+    /// read and written at most once per activated bundle.
+    trial_recorded: Mutex<Option<PathBuf>>,
 }
 
 impl<R: Runtime> HotswapAssets<R> {
@@ -34,7 +37,32 @@ impl<R: Runtime> HotswapAssets<R> {
                 log::info!("[hotswap] No cached assets found, using embedded assets");
             }
         }
-        Self { embedded, ota_dir }
+        Self {
+            embedded,
+            ota_dir,
+            trial_recorded: Mutex::new(None),
+        }
+    }
+
+    /// Record that a page was loaded from `dir`, starting the bundle's trial
+    /// (see [`HotswapMeta::trial_started`](crate::manifest::HotswapMeta::trial_started)).
+    fn record_trial_started(&self, dir: &Path) {
+        let Ok(mut recorded) = self.trial_recorded.lock() else {
+            return;
+        };
+        if recorded.as_deref() == Some(dir) {
+            return;
+        }
+        *recorded = Some(dir.to_path_buf());
+        if let Some(mut meta) = crate::updater::read_meta(dir) {
+            if !meta.confirmed && !meta.trial_started {
+                meta.trial_started = true;
+                match crate::updater::write_meta_file(dir, &meta) {
+                    Ok(()) => log::info!("[hotswap] Trial started for v{}", meta.version),
+                    Err(e) => log::warn!("[hotswap] Failed to record trial start: {}", e),
+                }
+            }
+        }
     }
 }
 
@@ -91,6 +119,9 @@ impl<R: Runtime> tauri::Assets<R> for HotswapAssets<R> {
                     // Try exact path
                     if let Some(data) = try_read(dir, relative) {
                         log::debug!("[hotswap] Serving from OTA: {}", relative);
+                        if relative.ends_with(".html") {
+                            self.record_trial_started(dir);
+                        }
                         return Some(Cow::Owned(data));
                     }
 
@@ -98,6 +129,7 @@ impl<R: Runtime> tauri::Assets<R> for HotswapAssets<R> {
                     let html_key = format!("{}.html", relative);
                     if let Some(data) = try_read(dir, &html_key) {
                         log::debug!("[hotswap] Serving from OTA (html fallback): {}", html_key);
+                        self.record_trial_started(dir);
                         return Some(Cow::Owned(data));
                     }
 
@@ -105,6 +137,7 @@ impl<R: Runtime> tauri::Assets<R> for HotswapAssets<R> {
                     let index_key = format!("{}/index.html", relative);
                     if let Some(data) = try_read(dir, &index_key) {
                         log::debug!("[hotswap] Serving from OTA (index fallback): {}", index_key);
+                        self.record_trial_started(dir);
                         return Some(Cow::Owned(data));
                     }
 
@@ -414,5 +447,45 @@ mod tests {
 
         let result = assets.get(&asset_key("about"));
         assert_eq!(result.unwrap().as_ref(), b"exact-match");
+    }
+
+    fn write_unstarted_meta(dir: &Path) {
+        std::fs::write(
+            dir.join("hotswap-meta.json"),
+            r#"{"version":"v2","sequence":2,"min_binary_version":"1.0.0","confirmed":false,"trial_started":false}"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_serving_a_page_starts_the_trial() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("index.html"), b"<html>").unwrap();
+        std::fs::write(dir.path().join("app.js"), b"js").unwrap();
+        write_unstarted_meta(dir.path());
+
+        let handle: AssetDirHandle = Arc::new(RwLock::new(Some(dir.path().to_path_buf())));
+        let assets = make_assets(handle, vec![]);
+
+        assets.get(&asset_key("app.js")).unwrap();
+        assert!(
+            !crate::updater::read_meta(dir.path()).unwrap().trial_started,
+            "scripts alone (e.g. lazy chunks of the old page) don't start a trial"
+        );
+        assets.get(&asset_key("index.html")).unwrap();
+        assert!(crate::updater::read_meta(dir.path()).unwrap().trial_started);
+    }
+
+    #[test]
+    fn test_index_fallback_starts_the_trial() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("settings")).unwrap();
+        std::fs::write(dir.path().join("settings/index.html"), b"<html>").unwrap();
+        write_unstarted_meta(dir.path());
+
+        let handle: AssetDirHandle = Arc::new(RwLock::new(Some(dir.path().to_path_buf())));
+        let assets = make_assets(handle, vec![]);
+        assets.get(&asset_key("settings")).unwrap();
+        assert!(crate::updater::read_meta(dir.path()).unwrap().trial_started);
     }
 }

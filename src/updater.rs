@@ -133,6 +133,8 @@ pub(crate) async fn check_update<R: Runtime>(
 
 /// Options for the download operation, bundled to avoid excessive arguments.
 pub(crate) struct DownloadOptions<'a> {
+    /// The running app (binary) version, recorded in the bundle metadata.
+    pub binary_version: &'a str,
     pub pubkey: &'a str,
     pub base_dir: &'a Path,
     pub max_bundle_size: u64,
@@ -246,6 +248,8 @@ pub(crate) async fn download_and_extract<R: Runtime>(
             min_binary_version: manifest.min_binary_version.clone(),
             confirmed: false,
             unconfirmed_launch_count: 0,
+            installed_with_binary: Some(opts.binary_version.to_string()),
+            trial_started: false,
         },
     )?;
 
@@ -368,19 +372,23 @@ async fn download_once<R: Runtime>(
 }
 
 /// Write metadata to a version directory with restrictive file permissions.
-fn write_meta_file(version_dir: &Path, meta: &HotswapMeta) -> Result<()> {
+/// Write `hotswap-meta.json` atomically (temp file + rename), so a crash
+/// mid-write can't leave truncated metadata behind.
+pub(crate) fn write_meta_file(version_dir: &Path, meta: &HotswapMeta) -> Result<()> {
     let meta_path = version_dir.join("hotswap-meta.json");
+    let tmp_path = version_dir.join("hotswap-meta.json.tmp");
     let meta_json =
         serde_json::to_string_pretty(meta).map_err(|e| Error::Serialization(e.to_string()))?;
 
-    std::fs::write(&meta_path, &meta_json)?;
+    std::fs::write(&tmp_path, &meta_json)?;
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&meta_path, std::fs::Permissions::from_mode(0o600));
+        let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600));
     }
 
+    std::fs::rename(&tmp_path, &meta_path)?;
     Ok(())
 }
 
@@ -653,7 +661,11 @@ pub(crate) fn check_compatibility(
         return None;
     }
 
-    if cache_policy.should_discard(&current, &meta, None) {
+    let previous_binary = meta
+        .installed_with_binary
+        .as_deref()
+        .and_then(|v| Version::parse(v).ok());
+    if cache_policy.should_discard(&current, &meta, previous_binary.as_ref()) {
         log::info!(
             "[hotswap] Binary cache policy discards cached v{} (binary={}, min={}).",
             meta.version,
@@ -673,7 +685,14 @@ pub(crate) fn check_compatibility(
         return None;
     }
 
-    if !meta.confirmed {
+    if !meta.confirmed && !meta.trial_started {
+        // Activated but never loaded yet (e.g. activateUpdate() without a
+        // reload): this launch is its first trial, not a failed one.
+        log::info!(
+            "[hotswap] v{} activated but not loaded yet, starting its first trial.",
+            meta.version
+        );
+    } else if !meta.confirmed {
         use crate::policy::ConfirmationDecision;
         match confirmation_policy.on_startup_unconfirmed(&meta) {
             ConfirmationDecision::KeepForNow => {
@@ -868,6 +887,8 @@ mod tests {
                 min_binary_version: min_bin.to_string(),
                 confirmed,
                 unconfirmed_launch_count: 0,
+                installed_with_binary: None,
+                trial_started: true,
             },
         )
         .unwrap();
@@ -963,6 +984,8 @@ mod tests {
                 min_binary_version: "1.0.0".into(),
                 confirmed: false,
                 unconfirmed_launch_count: 0,
+                installed_with_binary: None,
+                trial_started: true,
             },
         )
         .unwrap();
@@ -1554,5 +1577,125 @@ mod tests {
         extract_zip(&bytes, tmp.path()).unwrap();
         let meta = std::fs::symlink_metadata(tmp.path().join("link")).unwrap();
         assert!(!meta.file_type().is_symlink());
+    }
+
+    // ── 0.0.5: installing binary + first trial ─────────────────────────
+
+    fn create_new_version(
+        dir: &Path,
+        sequence: u64,
+        min_bin: &str,
+        installed_with: &str,
+        trial_started: bool,
+    ) {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join("index.html"), "<html></html>").unwrap();
+        write_meta_file(
+            dir,
+            &HotswapMeta {
+                version: format!("v{sequence}"),
+                sequence,
+                min_binary_version: min_bin.to_string(),
+                confirmed: false,
+                unconfirmed_launch_count: 0,
+                installed_with_binary: Some(installed_with.to_string()),
+                trial_started,
+            },
+        )
+        .unwrap();
+    }
+
+    fn startup(base: &Path, binary: &str) -> Option<PathBuf> {
+        check_compatibility(
+            base,
+            binary,
+            &BinaryCachePolicyKind::DiscardOnUpgrade,
+            &ConfirmationPolicyKind::SingleLaunch,
+            &RollbackPolicyKind::LatestConfirmed,
+        )
+    }
+
+    #[test]
+    fn test_bundle_with_lower_min_survives_restarts_on_same_binary() {
+        // Regression: DiscardOnUpgrade discarded every bundle whose
+        // min_binary_version was below the app version on each launch.
+        let tmp = TempDir::new().unwrap();
+        let seq1 = tmp.path().join("seq-1");
+        create_new_version(&seq1, 1, "1.0.0", "1.2.0", true);
+        let mut meta = read_meta(&seq1).unwrap();
+        meta.confirmed = true;
+        write_meta_file(&seq1, &meta).unwrap();
+        set_current(tmp.path(), "seq-1");
+
+        for _ in 0..3 {
+            assert_eq!(startup(tmp.path(), "1.2.0"), Some(seq1.clone()));
+        }
+        assert!(seq1.exists());
+    }
+
+    #[test]
+    fn test_bundle_is_discarded_after_app_upgrade() {
+        let tmp = TempDir::new().unwrap();
+        let seq1 = tmp.path().join("seq-1");
+        create_new_version(&seq1, 1, "1.0.0", "1.2.0", true);
+        let mut meta = read_meta(&seq1).unwrap();
+        meta.confirmed = true;
+        write_meta_file(&seq1, &meta).unwrap();
+        set_current(tmp.path(), "seq-1");
+
+        assert_eq!(
+            startup(tmp.path(), "1.3.0"),
+            None,
+            "new app release's embedded assets win"
+        );
+        assert!(!seq1.exists());
+    }
+
+    #[test]
+    fn test_activated_bundle_gets_its_first_launch() {
+        // activateUpdate() without a reload: the next launch is the first trial.
+        let tmp = TempDir::new().unwrap();
+        create_version(&tmp.path().join("seq-1"), "v1", 1, "1.0.0", true);
+        let seq2 = tmp.path().join("seq-2");
+        create_new_version(&seq2, 2, "1.0.0", "1.0.0", false);
+        set_current(tmp.path(), "seq-2");
+
+        assert_eq!(startup(tmp.path(), "1.0.0"), Some(seq2.clone()));
+        assert_eq!(read_meta(&seq2).unwrap().unconfirmed_launch_count, 0);
+    }
+
+    #[test]
+    fn test_loaded_but_unconfirmed_bundle_still_rolls_back() {
+        // Once a page was loaded from it (trial started) and notifyReady never
+        // came, SingleLaunch rolls back on the next start as before.
+        let tmp = TempDir::new().unwrap();
+        create_version(&tmp.path().join("seq-1"), "v1", 1, "1.0.0", true);
+        create_new_version(&tmp.path().join("seq-2"), 2, "1.0.0", "1.0.0", true);
+        set_current(tmp.path(), "seq-2");
+
+        assert_eq!(startup(tmp.path(), "1.0.0"), Some(tmp.path().join("seq-1")));
+    }
+
+    #[test]
+    fn test_legacy_meta_keeps_previous_behaviour() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("seq-1");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("hotswap-meta.json"),
+            r#"{"version":"v1","sequence":1,"min_binary_version":"1.0.0","confirmed":false}"#,
+        )
+        .unwrap();
+        let meta = read_meta(&dir).unwrap();
+        assert!(meta.trial_started, "pre-0.0.5 bundles are judged as before");
+        assert_eq!(meta.installed_with_binary, None);
+    }
+
+    #[test]
+    fn test_write_meta_file_leaves_no_temp_file() {
+        let tmp = TempDir::new().unwrap();
+        create_version(tmp.path(), "v1", 1, "1.0.0", true);
+        assert!(tmp.path().join("hotswap-meta.json").exists());
+        assert!(!tmp.path().join("hotswap-meta.json.tmp").exists());
     }
 }

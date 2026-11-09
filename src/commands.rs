@@ -151,6 +151,7 @@ pub async fn hotswap_apply<R: Runtime>(app: AppHandle<R>) -> Result<String> {
         .map_err(|_| Error::LockPoisoned)?
         .clone();
     let opts = updater::DownloadOptions {
+        binary_version: &state.binary_version,
         pubkey: &state.pubkey,
         base_dir: &state.base_dir,
         max_bundle_size: state.max_bundle_size,
@@ -206,6 +207,7 @@ pub async fn hotswap_download<R: Runtime>(app: AppHandle<R>) -> Result<String> {
         .map_err(|_| Error::LockPoisoned)?
         .clone();
     let opts = updater::DownloadOptions {
+        binary_version: &state.binary_version,
         pubkey: &state.pubkey,
         base_dir: &state.base_dir,
         max_bundle_size: state.max_bundle_size,
@@ -400,9 +402,7 @@ pub async fn hotswap_notify_ready<R: Runtime>(app: AppHandle<R>) -> Result<()> {
         if let Some(mut meta) = updater::read_meta(&version_dir) {
             meta.confirmed = true;
             meta.unconfirmed_launch_count = 0;
-            let json = serde_json::to_string_pretty(&meta)
-                .map_err(|e| Error::Serialization(e.to_string()))?;
-            std::fs::write(version_dir.join("hotswap-meta.json"), json)?;
+            updater::write_meta_file(&version_dir, &meta)?;
             log::info!("[hotswap] Sequence {} confirmed as ready", current_sequence);
 
             updater::emit_lifecycle(
