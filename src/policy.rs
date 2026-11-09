@@ -3,7 +3,7 @@
 //! Four traits govern how the plugin handles cached bundles at startup,
 //! on rollback, and during cleanup. Each has built-in enum implementations
 //! configurable via `tauri.conf.json`. Custom implementations can be
-//! injected via [`HotswapBuilder`](crate::HotswapBuilder) using the
+//! injected via [`HotswapBuilder`] using the
 //! `binary_cache_policy()`, `confirmation_policy()`, `rollback_policy()`,
 //! and `retention_policy()` setters, which accept any `impl Policy` type.
 //!
