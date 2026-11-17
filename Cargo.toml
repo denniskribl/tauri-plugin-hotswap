@@ -31,15 +31,27 @@ name = "tauri_plugin_hotswap"
 path = "src/lib.rs"
 
 [features]
-default = []
+default = ["rustls-tls"]
 zip = ["dep:zip"]
+# TLS backend for the built-in HTTP client. At least one is required; if both
+# are enabled, native-tls wins. See docs/decisions/0001-network-layer-and-tls.md.
+rustls-tls = [
+    "reqwest/rustls-no-provider",
+    "dep:rustls",
+    "dep:rustls-platform-verifier",
+    "dep:webpki-roots",
+]
+native-tls = ["reqwest/native-tls"]
+native-tls-vendored = ["native-tls", "reqwest/native-tls-vendored"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tauri = "2"
 log = "0.4"
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
+# `system-proxy`: honour the OS proxy settings, as 0.0.x did on desktop.
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "system-proxy"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"], optional = true }
 tokio = { version = "1", features = ["fs", "io-util", "time"] }
 semver = "1"
 minisign-verify = "0.2"
@@ -51,12 +63,13 @@ url = "2"
 dirs = "6"
 zip = { version = "9", optional = true }
 
-# TLS: native-tls on desktop, rustls on Android
+# rustls-tls: the OS verifies certificates, except on Android (bundled roots;
+# the Android platform verifier needs Kotlin/JNI setup, see #27).
 [target.'cfg(not(target_os = "android"))'.dependencies]
-reqwest = { version = "0.12", features = ["json", "stream", "native-tls"] }
+rustls-platform-verifier = { version = "0.7", optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+webpki-roots = { version = "1", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

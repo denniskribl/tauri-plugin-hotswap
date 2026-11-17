@@ -70,6 +70,22 @@ tauri-plugin-hotswap = "0.0.5"
 npm install tauri-plugin-hotswap-api
 ```
 
+### TLS
+
+By default the plugin uses **rustls**: no OpenSSL needed, and certificates are verified by the OS (desktop, iOS) or against the bundled Mozilla roots (Android). OS proxy settings are honoured. To use the platform TLS stack instead:
+
+```toml
+tauri-plugin-hotswap = { version = "0.0.5", default-features = false, features = ["native-tls"] }
+```
+
+| Feature | TLS stack | Notes |
+|---|---|---|
+| `rustls-tls` (default) | rustls + `ring` | Needs a C compiler for the target (Tauri builds already have one) |
+| `native-tls` | SChannel / Security.framework / OpenSSL | On Linux and Android the app must provide OpenSSL |
+| `native-tls-vendored` | same, OpenSSL built from source | Needs `perl` and `make` |
+
+At least one is required. If both are enabled, `native-tls` is used. Why: [decision 0001](docs/decisions/0001-network-layer-and-tls.md).
+
 ### 2. Configure
 
 Add to your `tauri.conf.json`:

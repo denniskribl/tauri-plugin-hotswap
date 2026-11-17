@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** the TLS backend is now chosen with Cargo features that apply on every platform: `rustls-tls` (default), `native-tls`, `native-tls-vendored`. Desktop and iOS apps on default features move from the OS TLS stack to rustls (certificates are still verified by the OS). Apps with `default-features = false` must enable one. See `MIGRATION.md`. ([#18](https://github.com/denniskribl/tauri-plugin-hotswap/issues/18), thanks @nhorto for the analysis)
+- Upgraded `reqwest` to 0.13. The resolvers and bundle downloads share one HTTP client.
+
 ## [0.0.5] — 2026-11-09
 
 ### Added

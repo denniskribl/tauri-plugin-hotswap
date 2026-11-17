@@ -38,6 +38,7 @@ mod assets;
 mod commands;
 /// Error types returned by the plugin.
 pub mod error;
+mod http;
 /// Manifest and response types exchanged between client and server.
 pub mod manifest;
 /// Configurable policy traits for OTA update lifecycle decisions.
@@ -516,7 +517,7 @@ fn build_plugin<R: Runtime>(
     let base_dir_clone = base_dir.clone();
     let current_sequence_clone = current_sequence;
     let current_version_clone = current_version.clone();
-    let http_client = reqwest::Client::new();
+    let http_client = http::default_client()?;
 
     let plugin = Builder::<R, Value>::new("hotswap")
         .invoke_handler(tauri::generate_handler![
