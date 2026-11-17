@@ -71,10 +71,14 @@ pub struct HttpResolver {
 
 impl HttpResolver {
     /// Create a new resolver with the given endpoint URL template.
+    ///
+    /// # Panics
+    ///
+    /// If the TLS backend can't be initialized (as `reqwest::Client::new` would).
     pub fn new(endpoint: impl Into<String>) -> Self {
         Self {
             endpoint: endpoint.into(),
-            client: reqwest::Client::new(),
+            client: crate::http::default_client().expect("hotswap: HTTP client setup failed"),
             headers: HashMap::new(),
         }
     }
@@ -204,10 +208,14 @@ pub struct StaticFileResolver {
 
 impl StaticFileResolver {
     /// Create a new resolver with the given source path or URL.
+    ///
+    /// # Panics
+    ///
+    /// If the TLS backend can't be initialized (as `reqwest::Client::new` would).
     pub fn new(source: impl Into<String>) -> Self {
         Self {
             source: source.into(),
-            client: reqwest::Client::new(),
+            client: crate::http::default_client().expect("hotswap: HTTP client setup failed"),
         }
     }
 

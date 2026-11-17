@@ -49,8 +49,11 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo clippy --all-features -- -D warnings
 
-      - name: Test
-        run: cargo test --all-features
+      - name: Test (rustls-tls, default)
+        run: cargo test --features zip
+
+      - name: Test (native-tls)
+        run: cargo test --no-default-features --features native-tls,zip
 
       - name: Rustdoc
         if: runner.os == 'Linux'
@@ -80,8 +83,40 @@ jobs:
         with:
           tool: cargo-hack
 
-      - name: Check each feature
-        run: cargo hack check --each-feature --no-dev-deps
+      # Every combination that has a TLS backend (none is a compile error).
+      - name: Check feature combinations
+        run: cargo hack check --feature-powerset --at-least-one-of rustls-tls,native-tls,native-tls-vendored --no-dev-deps
+
+  # Each TLS feature must keep the other stack out of the build, on every
+  # target (see docs/decisions/0001-network-layer-and-tls.md).
+  tls-deps:
+    name: TLS dependency graph
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Check dependency graphs
+        run: |
+          set -euo pipefail
+          fail=0
+          deny() { # <target> <forbidden crate> <cargo args...>
+            local target="$1" crate="$2"; shift 2
+            if cargo tree -e normal --target "$target" --prefix none --format '{p}' "$@" \
+                | grep -q "^$crate "; then
+              echo "::error::$crate is in the graph for $target with [$*]"
+              fail=1
+            fi
+          }
+          for t in x86_64-unknown-linux-gnu x86_64-pc-windows-msvc aarch64-apple-darwin \
+                   aarch64-apple-ios aarch64-linux-android; do
+            deny "$t" openssl-sys
+            deny "$t" aws-lc-sys
+            deny "$t" ring --no-default-features --features native-tls
+            deny "$t" ring --no-default-features --features native-tls-vendored
+          done
+          exit "$fail"
 
   # Android and iOS are supported platforms, so they get a compile check.
   # (No device tests: those need an emulator/simulator and a host app.)
@@ -107,16 +142,29 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      # C dependencies (e.g. ring) need the NDK's clang to cross-compile.
+      # C dependencies (ring, vendored OpenSSL) need the NDK toolchain.
       - name: Configure Android NDK
         if: matrix.target == 'aarch64-linux-android'
         run: |
           BIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          echo "CC_aarch64_linux_android=$BIN/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
-          echo "AR_aarch64_linux_android=$BIN/llvm-ar" >> "$GITHUB_ENV"
+          echo "$BIN" >> "$GITHUB_PATH"
+          {
+            echo "CC_aarch64_linux_android=$BIN/aarch64-linux-android24-clang"
+            echo "AR_aarch64_linux_android=$BIN/llvm-ar"
+            echo "RANLIB_aarch64_linux_android=$BIN/llvm-ranlib"
+          } >> "$GITHUB_ENV"
 
-      - name: Check
-        run: cargo check --all-features --target ${{ matrix.target }}
+      - name: Check (rustls-tls, default)
+        run: cargo check --features zip --target ${{ matrix.target }}
+
+      # Android has no system OpenSSL, so native-tls is checked with the vendored build.
+      - name: Check (native-tls)
+        run: |
+          if [ "${{ matrix.target }}" = aarch64-linux-android ]; then
+            cargo check --no-default-features --features native-tls-vendored,zip --target ${{ matrix.target }}
+          else
+            cargo check --no-default-features --features native-tls,zip --target ${{ matrix.target }}
+          fi
 
   coverage:
     name: Coverage
