@@ -6,7 +6,7 @@ Thanks for your interest in contributing to `tauri-plugin-hotswap`!
 
 ### Prerequisites
 
-- Rust 1.77.2+
+- Rust 1.88+
 - Node.js 18+
 - A Tauri v2 development environment ([setup guide](https://v2.tauri.app/start/prerequisites/))
 
@@ -48,9 +48,15 @@ cargo run
 
 Note: The example uses a placeholder pubkey — it won't actually connect to an update server. It demonstrates the plugin API and UI integration.
 
+## Branches
+
+- `main` is the released line (0.0.x). The docs site deploys from it.
+- `release/1.0` collects all 1.0 work. **PRs for 1.0 milestone issues target `release/1.0`.** It is merged into `main` when 1.0.0 is released.
+- Design decisions are recorded in [`docs/decisions/`](docs/decisions/).
+
 ## Pull requests
 
-1. Fork the repo and create a branch from `main`
+1. Fork the repo and create a branch from `main` (or from `release/1.0` for 1.0 work)
 2. Make your changes
 3. Add tests for new functionality
 4. Run `cargo fmt`, `cargo clippy --all-features -- -D warnings`, and `cargo test`

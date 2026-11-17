@@ -165,9 +165,16 @@ jobs:
       - name: Update npm
         run: npm install -g npm@^11.5.1
 
+      # Pre-releases (v1.0.0-rc.1, ...) go to the `next` dist-tag so they never
+      # become `latest` for `npm install`.
       - name: Publish to npm
         working-directory: guest-js
-        run: npm publish --access public
+        run: |
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            npm publish --access public --tag next
+          else
+            npm publish --access public
+          fi
 
   github-release:
     name: GitHub Release
@@ -203,6 +210,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          PRERELEASE=()
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            PRERELEASE=(--prerelease)
+          fi
           gh release create "${{ github.ref_name }}" \
             --title "${{ github.ref_name }}" \
-            --notes-file "${{ steps.notes.outputs.notes_file }}"
+            --notes-file "${{ steps.notes.outputs.notes_file }}" \
+            "${PRERELEASE[@]}"
