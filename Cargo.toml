@@ -42,13 +42,13 @@ log = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
 tokio = { version = "1", features = ["fs", "io-util", "time"] }
 semver = "1"
-minisign-verify = "0.2"
+minisign-verify = "0.3"
 tar = "0.4"
 flate2 = "1"
 thiserror = "2"
-base64 = "0.22"
+base64 = "0.23"
 url = "2"
-dirs = "6"
+dirs = "7"
 zip = { version = "9", optional = true }
 
 # TLS: native-tls on desktop, rustls on Android
