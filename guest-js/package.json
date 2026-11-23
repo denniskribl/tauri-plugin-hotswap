@@ -36,7 +36,7 @@
   },
   "devDependencies": {
     "@tauri-apps/api": "^2.0.0",
-    "tsup": "^8.0.0",
-    "typescript": "^6.0.3"
+    "tsup": "^9.0.0",
+    "typescript": "^7.0.2"
   }
 }
